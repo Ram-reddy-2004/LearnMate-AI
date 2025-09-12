@@ -1,5 +1,7 @@
-
 import React, { useState, useEffect, useCallback } from 'react';
+// Fix: Remove unused 'signOut' import from Firebase v9.
+import { auth } from './services/firebaseConfig';
+import { useAuth } from './context/AuthContext';
 import Header from './components/Header';
 import ModuleSidebar from './components/ModuleSidebar';
 import ChatWindow from './components/ChatWindow';
@@ -10,36 +12,39 @@ import MyProgress from './components/MyProgress';
 import TestBuddy from './components/TestBuddy';
 import SkillPath from './components/SkillPath';
 import LearnGuide from './components/LearnGuide';
-import { type Message, Sender, type QuizResult } from './types';
+import { AuthPage } from './components/AuthPage';
+import { type Message, Sender, type QuizResult, type CodingAttempt, UserData } from './types';
 import { generateContent } from './services/geminiService';
-
-const MODULE_WELCOME_MESSAGES: Record<string, string> = {
-  // All modules now have their own dedicated components.
-};
-
+import { updateLearnVault, addQuizResult, addCodingAttempt } from './services/firebaseService';
 
 const App: React.FC = () => {
+  const { user, userData, isLoading: isAuthLoading } = useAuth();
+
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
-  const [activeModule, setActiveModule] = useState<string>('LearnVault');
+  const [activeModule, setActiveModule] = useState<string>('MyProgress');
+  
+  // State is now driven by userData from Firestore
   const [learnVaultContent, setLearnVaultContent] = useState<string>('');
   const [quizHistory, setQuizHistory] = useState<QuizResult[]>([]);
+  const [codingHistory, setCodingHistory] = useState<CodingAttempt[]>([]);
+  
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
   useEffect(() => {
-    // Only set initial messages for modules that use the standard chat interface
-    if (!['LearnVault', 'LearnGuide', 'SmartQuiz', 'MyProgress', 'TestBuddy', 'SkillPath'].includes(activeModule)) {
-      const welcomeText = MODULE_WELCOME_MESSAGES[activeModule] || "Welcome! How can I help you today?";
-      setMessages([
-        {
-          id: `initial-message-${activeModule}`,
-          sender: Sender.AI,
-          text: welcomeText,
-          timestamp: new Date().toISOString(),
-        },
-      ]);
+    if (userData) {
+      setLearnVaultContent(userData.learnVaultContent || '');
+      setQuizHistory(userData.quizHistory || []);
+      setCodingHistory(userData.codingHistory || []);
+      setActiveModule('MyProgress'); // Default to progress page on login
+    } else {
+      // Reset state on logout
+      setLearnVaultContent('');
+      setQuizHistory([]);
+      setCodingHistory([]);
     }
-  }, [activeModule]);
+  }, [userData]);
 
   const handleSendMessage = useCallback(async (prompt: string, files: File[]) => {
     if (!prompt.trim() && files.length === 0) return;
@@ -87,19 +92,70 @@ const App: React.FC = () => {
     setError(null);
   }
   
-  const handleVaultUpdate = useCallback((newContent: string) => {
-    setLearnVaultContent(prev => `${prev}\n\n${newContent}`);
-  }, []);
+  const handleVaultUpdate = useCallback(async (newContent: string) => {
+    if (!user) return;
+    const updatedContent = `${learnVaultContent}\n\n${newContent}`;
+    setLearnVaultContent(updatedContent); // Optimistic UI update
+    try {
+      await updateLearnVault(user.uid, newContent, learnVaultContent);
+    } catch (e) {
+      console.error("Failed to update vault:", e);
+      // Optionally revert state or show an error
+    }
+  }, [user, learnVaultContent]);
 
-  const handleQuizCompletion = useCallback((result: { score: number; totalQuestions: number }) => {
+  const handleQuizCompletion = useCallback(async (result: { score: number; totalQuestions: number; topic: string }) => {
+    if (!user) return;
     const newResult: QuizResult = {
       ...result,
-      topic: "General Knowledge", // Simulate topic for now
       timestamp: new Date().toISOString(),
     };
-    setQuizHistory(prev => [...prev, newResult]);
-  }, []);
+    setQuizHistory(prev => [...prev, newResult]); // Optimistic UI update
+    try {
+      await addQuizResult(user.uid, newResult);
+    } catch (e) {
+      console.error("Failed to save quiz result:", e);
+    }
+  }, [user]);
 
+  const handleCodingAttempt = useCallback(async (attempt: Omit<CodingAttempt, 'timestamp'>) => {
+    if (!user) return;
+    const newAttempt: CodingAttempt = {
+      ...attempt,
+      timestamp: new Date().toISOString()
+    };
+    setCodingHistory(prev => [...prev, newAttempt]); // Optimistic UI update
+    try {
+      await addCodingAttempt(user.uid, newAttempt);
+    } catch(e) {
+      console.error("Failed to save coding attempt:", e);
+    }
+  }, [user]);
+
+  const handleSignOut = async () => {
+    try {
+      // Fix: Use Firebase v8 namespaced method for signing out.
+      await auth.signOut();
+    } catch (error) {
+      console.error("Error signing out: ", error);
+    }
+  };
+
+  if (isAuthLoading) {
+    return (
+        <div className="flex items-center justify-center min-h-screen">
+            <svg className="animate-spin h-10 w-10 text-blue-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+        </div>
+    );
+  }
+
+  if (!user) {
+    return <AuthPage />;
+  }
+  
   const renderModuleContent = () => {
     switch (activeModule) {
       case 'LearnVault':
@@ -116,11 +172,18 @@ const App: React.FC = () => {
                     onQuizComplete={handleQuizCompletion}
                 />;
       case 'MyProgress':
-        return <MyProgress quizHistory={quizHistory} onNavigateToQuiz={() => handleModuleChange('SmartQuiz')} />;
+        return <MyProgress 
+                    userData={userData}
+                    quizHistory={quizHistory} 
+                    codingHistory={codingHistory}
+                    onNavigateToQuiz={() => handleModuleChange('SmartQuiz')} 
+               />;
       case 'TestBuddy':
         return <TestBuddy
                     learnVaultContent={learnVaultContent}
                     onNavigateToVault={() => handleModuleChange('LearnVault')}
+                    onQuizComplete={handleQuizCompletion}
+                    onCodingAttempt={handleCodingAttempt}
                 />;
       case 'SkillPath':
         return <SkillPath />;
@@ -132,10 +195,19 @@ const App: React.FC = () => {
   const showPromptInput = !['LearnVault', 'LearnGuide', 'SmartQuiz', 'MyProgress', 'TestBuddy', 'SkillPath'].includes(activeModule);
 
   return (
-    <div className="flex h-screen w-full font-sans bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100">
-      <ModuleSidebar activeModule={activeModule} onModuleChange={handleModuleChange} />
-      <div className="flex flex-col flex-1">
-        <Header />
+    <div className="min-h-screen w-full font-sans bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 flex">
+      <ModuleSidebar 
+        isOpen={isSidebarOpen}
+        setIsOpen={setIsSidebarOpen}
+        activeModule={activeModule} 
+        onModuleChange={handleModuleChange} 
+      />
+      <div className="flex flex-col flex-1 md:ml-[250px]">
+        <Header 
+          onMenuClick={() => setIsSidebarOpen(true)}
+          userData={userData}
+          onSignOut={handleSignOut}
+        />
         <main className="flex-1 overflow-y-auto p-4 md:p-6">
           {renderModuleContent()}
         </main>

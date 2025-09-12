@@ -1,3 +1,10 @@
+// Fix: Import firebase v8 User type.
+// Fix: Use firebase compat imports for v8 syntax. This provides the firebase.User type.
+import firebase from 'firebase/compat/app';
+import 'firebase/compat/auth';
+
+export type FirebaseUser = firebase.User;
+
 export enum Sender {
   User = 'user',
   AI = 'ai',
@@ -38,10 +45,62 @@ export interface QuizResult {
 }
 
 // Types for TestBuddy feature
-export interface TestConfig {
-  numQuestions: number;
-  timeLimit: number; // in minutes
+export type CodingProblemDifficulty = 'Easy' | 'Medium' | 'Hard';
+export type Language = 'javascript' | 'python' | 'java' | 'c';
+
+export interface Example {
+    input: string;
+    output: string;
+    explanation?: string;
 }
+
+export interface TestCase {
+    input: string;
+    output: string;
+}
+
+export interface CodingProblem {
+    id: string;
+    title: string;
+    difficulty: CodingProblemDifficulty;
+    description: string;
+    constraints: string[];
+    examples: Example[];
+    testCases: TestCase[]; // These are hidden from the user
+    starterCode: Record<Language, string>;
+}
+
+export type SubmissionStatus = 'Accepted' | 'Wrong Answer' | 'Runtime Error' | 'Time Limit Exceeded' | 'Compilation Error' | 'Pending' | 'Running';
+
+export interface SubmissionResult {
+    status: SubmissionStatus;
+    stdout?: string;
+    expectedOutput?: string;
+    stderr?: string;
+    compile_output?: string;
+    time?: string; // e.g., "0.05s"
+    memory?: number; // in KB
+    failedInput?: string;
+}
+
+export interface TestCaseResult {
+    input: string;
+    expectedOutput: string;
+    userOutput: string;
+    status: 'Passed' | 'Failed';
+    error?: string;
+}
+
+
+export interface CodingAttempt {
+    problemTitle: string;
+    problemDifficulty: CodingProblemDifficulty;
+    language: Language;
+    code: string;
+    status: SubmissionStatus;
+    timestamp: string;
+}
+
 
 // Types for SkillPath feature
 export enum ResourceType {
@@ -68,6 +127,27 @@ export interface SkillPathResponse {
 // Types for LearnGuide feature
 export interface Concept {
     title: string;
-    explanation: string;
+    definition: string;
+    explanation: string[];
     examples: string[];
+}
+
+// Types for Firebase User Data
+export interface UserProgress {
+  accuracy: number;
+  weakTopics: string[];
+  lastQuizScore: number;
+  timeSpent: number;
+}
+
+export interface UserData {
+  uid: string;
+  firstName: string;
+  lastName: string;
+  email: string;
+  createdAt: string; // ISO String Date
+  progress: UserProgress;
+  learnVaultContent: string;
+  quizHistory: QuizResult[];
+  codingHistory: CodingAttempt[];
 }

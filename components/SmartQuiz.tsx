@@ -1,21 +1,109 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { generateQuiz } from '../services/geminiService';
 import { type QuizQuestion, type QuizConfig } from '../types';
-import { PencilRulerIcon, LightbulbIcon, CheckCircleIcon, XCircleIcon, BrainCircuitIcon } from './Icons';
+import { PencilRulerIcon, Volume2Icon, CheckCircleIcon, XCircleIcon, BrainCircuitIcon } from './Icons';
 
 type QuizState = 'config' | 'loading' | 'active' | 'results';
 
 interface SmartQuizProps {
     learnVaultContent: string;
     onNavigateToVault: () => void;
-    onQuizComplete: (result: { score: number, totalQuestions: number }) => void;
+    onQuizComplete: (result: { score: number, totalQuestions: number, topic: string }) => void;
 }
+
+const ExplanationCard: React.FC<{ text: string }> = ({ text }) => {
+    const [isSpeaking, setIsSpeaking] = useState(false);
+    const [currentWordIndex, setCurrentWordIndex] = useState(-1);
+
+    const words = useMemo(() => text.split(/\s+/).filter(Boolean), [text]);
+
+    useEffect(() => {
+        // Cleanup: stop speech when component unmounts or question changes
+        return () => {
+            if (speechSynthesis.speaking) {
+                speechSynthesis.cancel();
+            }
+        };
+    }, [text]);
+
+    const handleSpeak = () => {
+        if (!('speechSynthesis' in window)) {
+            alert("Your browser does not support text-to-speech.");
+            return;
+        }
+
+        if (isSpeaking) {
+            speechSynthesis.cancel(); // Simple stop
+            setIsSpeaking(false);
+            setCurrentWordIndex(-1);
+            return;
+        }
+
+        const utterance = new SpeechSynthesisUtterance(text);
+        
+        const voices = window.speechSynthesis.getVoices();
+        const indianVoice = voices.find(v => v.lang === 'en-IN');
+        utterance.voice = indianVoice || voices.find(v => v.lang.startsWith('en-')) || voices[0];
+        utterance.rate = 1.0;
+
+        utterance.onstart = () => {
+            setIsSpeaking(true);
+            setCurrentWordIndex(0);
+        };
+        
+        utterance.onboundary = (event) => {
+            if (event.name === 'word') {
+                const textUpToBoundary = text.substring(0, event.charIndex);
+                const wordCount = textUpToBoundary.split(/\s+/).filter(Boolean).length;
+                setCurrentWordIndex(wordCount);
+            }
+        };
+        
+        utterance.onend = () => {
+            setIsSpeaking(false);
+            setCurrentWordIndex(-1);
+        };
+        
+        utterance.onerror = () => {
+             setIsSpeaking(false);
+             setCurrentWordIndex(-1);
+        };
+
+        speechSynthesis.speak(utterance);
+    };
+
+    return (
+        <div className="relative mt-4 p-4 bg-gray-50 dark:bg-gray-700/50 rounded-xl shadow-sm animate-fade-in">
+            <button
+                onClick={handleSpeak}
+                className="absolute top-4 right-4 p-1 text-gray-500 hover:text-blue-500 dark:text-gray-400 dark:hover:text-blue-400 rounded-full"
+                aria-label={isSpeaking ? 'Stop speech' : 'Read explanation aloud'}
+            >
+                <Volume2Icon className="h-5 w-5" />
+            </button>
+            <h4 className="font-bold text-gray-900 dark:text-white mb-2 text-lg">
+                💡 Explanation
+            </h4>
+            <p className="text-gray-700 dark:text-gray-300 pr-8">
+                {words.map((word, index) => (
+                    <span
+                        key={index}
+                        className={`transition-colors duration-100 ${index === currentWordIndex ? 'bg-yellow-300 dark:bg-yellow-400 rounded' : 'bg-transparent'}`}
+                    >
+                        {word}{' '}
+                    </span>
+                ))}
+            </p>
+        </div>
+    );
+};
 
 const SmartQuiz: React.FC<SmartQuizProps> = ({ learnVaultContent, onNavigateToVault, onQuizComplete }) => {
     const [quizState, setQuizState] = useState<QuizState>('config');
     const [config, setConfig] = useState<QuizConfig>({ numQuestions: 5 });
     const [questions, setQuestions] = useState<QuizQuestion[]>([]);
+    const [quizTopic, setQuizTopic] = useState<string>('');
     const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
     const [selectedAnswer, setSelectedAnswer] = useState<string | null>(null);
     const [isAnswerSubmitted, setIsAnswerSubmitted] = useState(false);
@@ -24,9 +112,9 @@ const SmartQuiz: React.FC<SmartQuizProps> = ({ learnVaultContent, onNavigateToVa
 
     useEffect(() => {
         if (quizState === 'results') {
-            onQuizComplete({ score, totalQuestions: questions.length });
+            onQuizComplete({ score, totalQuestions: questions.length, topic: quizTopic });
         }
-    }, [quizState]);
+    }, [quizState, score, questions.length, onQuizComplete, quizTopic]);
 
     const handleGenerateQuiz = async () => {
         if (!learnVaultContent.trim()) {
@@ -36,11 +124,12 @@ const SmartQuiz: React.FC<SmartQuizProps> = ({ learnVaultContent, onNavigateToVa
         setError(null);
         setQuizState('loading');
         try {
-            const generatedQuestions = await generateQuiz(learnVaultContent, config);
+            const { questions: generatedQuestions, topic: generatedTopic } = await generateQuiz(learnVaultContent, config);
             if (generatedQuestions.length === 0) {
                  throw new Error("The AI could not generate a quiz from the provided text. Please try with different content.");
             }
             setQuestions(generatedQuestions);
+            setQuizTopic(generatedTopic);
             setQuizState('active');
         } catch (err) {
             const errorMessage = err instanceof Error ? err.message : 'An unknown error occurred.';
@@ -82,6 +171,7 @@ const SmartQuiz: React.FC<SmartQuizProps> = ({ learnVaultContent, onNavigateToVa
         setIsAnswerSubmitted(false);
         setScore(0);
         setError(null);
+        setQuizTopic('');
     };
 
     const renderConfigScreen = () => (
@@ -135,7 +225,8 @@ const SmartQuiz: React.FC<SmartQuizProps> = ({ learnVaultContent, onNavigateToVa
         <div className="text-center">
             <svg className="animate-spin mx-auto h-12 w-12 text-blue-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8
+ 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
             </svg>
             <p className="mt-4 text-lg font-medium text-gray-700 dark:text-gray-300">Generating your quiz...</p>
         </div>
@@ -188,15 +279,7 @@ const SmartQuiz: React.FC<SmartQuizProps> = ({ learnVaultContent, onNavigateToVa
                     </div>
                     
                     {isAnswerSubmitted && (
-                        <div className="mt-6 p-4 bg-gray-100 dark:bg-gray-700 rounded-lg animate-fade-in">
-                            <div className="flex items-start gap-3">
-                                <LightbulbIcon className="h-6 w-6 text-yellow-500 flex-shrink-0 mt-1" />
-                                <div>
-                                    <h4 className="font-semibold text-gray-800 dark:text-gray-100">Explanation</h4>
-                                    <p className="text-gray-700 dark:text-gray-300 mt-1">{question.explanation}</p>
-                                </div>
-                            </div>
-                        </div>
+                        <ExplanationCard text={question.explanation} />
                     )}
 
                     <div className="mt-8 text-center">
@@ -218,7 +301,7 @@ const SmartQuiz: React.FC<SmartQuizProps> = ({ learnVaultContent, onNavigateToVa
      const renderResultsScreen = () => (
         <div className="w-full max-w-2xl mx-auto text-center bg-white dark:bg-gray-800 p-8 rounded-xl shadow-lg border border-gray-200 dark:border-gray-700">
             <h2 className="text-3xl font-bold text-gray-800 dark:text-white mb-2">Quiz Complete!</h2>
-            <p className="text-gray-600 dark:text-gray-400 mb-6">Well done on completing the quiz.</p>
+            <p className="text-gray-600 dark:text-gray-400 mb-6">Well done on completing the quiz on <span className="font-semibold">{quizTopic}</span>.</p>
             <div className="mb-8">
                 <p className="text-lg text-gray-700 dark:text-gray-200">Your Score:</p>
                 <p className="text-6xl font-bold text-blue-500 my-2">{score} <span className="text-4xl text-gray-500 dark:text-gray-400">/ {questions.length}</span></p>
