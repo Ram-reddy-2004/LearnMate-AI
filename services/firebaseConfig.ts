@@ -6,13 +6,12 @@ import "firebase/compat/firestore";
 // NOTE: In a real-world app, these should be in environment variables.
 // As per the prompt, using the provided configuration directly.
 const firebaseConfig = {
-  apiKey: "AIzaSyDQLYksMjBpZu-v25cQhslaoIa48nadfc8",
-  authDomain: "learnmate-ai-82b4c.firebaseapp.com",
-  projectId: "learnmate-ai-82b4c",
-  storageBucket: "learnmate-ai-82b4c.appspot.com",
-  messagingSenderId: "613530799292",
-  appId: "1:613530799292:web:a0d480525122b3e23654b9",
-  measurementId: "G-0BE7WKL77S"
+  apiKey: "YOUR_API_KEY",
+  authDomain: "your-project.firebaseapp.com",
+  projectId: "your-project-id",
+  storageBucket: "your-project.appspot.com",
+  messagingSenderId: "YOUR_SENDER_ID",
+  appId: "YOUR_APP_ID"
 };
 
 // Fix: Use Firebase v8 initialization pattern to prevent re-initialization on hot reloads.
