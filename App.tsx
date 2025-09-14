@@ -13,9 +13,9 @@ import TestBuddy from './components/TestBuddy';
 import SkillPath from './components/SkillPath';
 import LearnGuide from './components/LearnGuide';
 import { AuthPage } from './components/AuthPage';
-import { type Message, Sender, type QuizResult, type CodingAttempt, UserData } from './types';
+import { type Message, Sender, type McqResult, UserData } from './types';
 import { generateContent } from './services/geminiService';
-import { updateLearnVault, addQuizResult, addCodingAttempt } from './services/firebaseService';
+import { updateLearnVault, addMcqResult, updateUserOnSuccess } from './services/firebaseService';
 
 const App: React.FC = () => {
   const { user, userData, isLoading: isAuthLoading } = useAuth();
@@ -27,22 +27,19 @@ const App: React.FC = () => {
   
   // State is now driven by userData from Firestore
   const [learnVaultContent, setLearnVaultContent] = useState<string>('');
-  const [quizHistory, setQuizHistory] = useState<QuizResult[]>([]);
-  const [codingHistory, setCodingHistory] = useState<CodingAttempt[]>([]);
+  const [mcqHistory, setMcqHistory] = useState<McqResult[]>([]);
   
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
   useEffect(() => {
     if (userData) {
       setLearnVaultContent(userData.learnVaultContent || '');
-      setQuizHistory(userData.quizHistory || []);
-      setCodingHistory(userData.codingHistory || []);
+      setMcqHistory(userData.mcqHistory || []);
       setActiveModule('MyProgress'); // Default to progress page on login
     } else {
       // Reset state on logout
       setLearnVaultContent('');
-      setQuizHistory([]);
-      setCodingHistory([]);
+      setMcqHistory([]);
     }
   }, [userData]);
 
@@ -104,33 +101,31 @@ const App: React.FC = () => {
     }
   }, [user, learnVaultContent]);
 
-  const handleQuizCompletion = useCallback(async (result: { score: number; totalQuestions: number; topic: string }) => {
+  const handleMcqCompletion = useCallback(async (result: { score: number; total: number; topic: string }) => {
     if (!user) return;
-    const newResult: QuizResult = {
+    const newResult: McqResult = {
       ...result,
-      timestamp: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
     };
-    setQuizHistory(prev => [...prev, newResult]); // Optimistic UI update
+    setMcqHistory(prev => [...prev, newResult]); // Optimistic UI update
     try {
-      await addQuizResult(user.uid, newResult);
+      await addMcqResult(user.uid, newResult);
     } catch (e) {
       console.error("Failed to save quiz result:", e);
     }
   }, [user]);
-
-  const handleCodingAttempt = useCallback(async (attempt: Omit<CodingAttempt, 'timestamp'>) => {
+  
+  const handleCodingSuccess = useCallback(async () => {
     if (!user) return;
-    const newAttempt: CodingAttempt = {
-      ...attempt,
-      timestamp: new Date().toISOString()
-    };
-    setCodingHistory(prev => [...prev, newAttempt]); // Optimistic UI update
+    // This function will just update the user's progress summary.
+    // The detailed results are handled within TestBuddy.
     try {
-      await addCodingAttempt(user.uid, newAttempt);
+        await updateUserOnSuccess(user.uid);
     } catch(e) {
-      console.error("Failed to save coding attempt:", e);
+        console.error("Failed to update user progress:", e);
     }
   }, [user]);
+
 
   const handleSignOut = async () => {
     try {
@@ -169,21 +164,20 @@ const App: React.FC = () => {
         return <SmartQuiz 
                     learnVaultContent={learnVaultContent} 
                     onNavigateToVault={() => handleModuleChange('LearnVault')}
-                    onQuizComplete={handleQuizCompletion}
+                    onQuizComplete={handleMcqCompletion}
                 />;
       case 'MyProgress':
         return <MyProgress 
                     userData={userData}
-                    quizHistory={quizHistory} 
-                    codingHistory={codingHistory}
+                    mcqHistory={mcqHistory} 
                     onNavigateToQuiz={() => handleModuleChange('SmartQuiz')} 
                />;
       case 'TestBuddy':
         return <TestBuddy
                     learnVaultContent={learnVaultContent}
                     onNavigateToVault={() => handleModuleChange('LearnVault')}
-                    onQuizComplete={handleQuizCompletion}
-                    onCodingAttempt={handleCodingAttempt}
+                    onMcqComplete={handleMcqCompletion}
+                    onCodingSuccess={handleCodingSuccess}
                 />;
       case 'SkillPath':
         return <SkillPath />;

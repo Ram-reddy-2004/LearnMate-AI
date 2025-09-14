@@ -1,8 +1,10 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { useAuth } from '../context/AuthContext';
 import { isProgrammingTopic, generateQuiz, generateCodingProblems, generateCodeHint } from '../services/geminiService';
 import { createSubmission } from '../services/judge0Service';
+import { addMcqResult, addTestResult, updateUserOnSuccess } from '../services/firebaseService';
 // Fix: Import the SubmissionStatus type.
-import { type CodingProblem, type CodingProblemDifficulty, type Language, type SubmissionResult, type QuizQuestion, type CodingAttempt, type TestCaseResult, type SubmissionStatus } from '../types';
+import { type CodingProblem, type CodingProblemDifficulty, type Language, type SubmissionResult, type QuizQuestion, type TestCaseResult, type SubmissionStatus, TestCaseResultForFirestore } from '../types';
 import { BrainCircuitIcon, FlaskConicalIcon, CheckCircleIcon, XCircleIcon, ClockIcon, PlayIcon, SendHorizonalIcon, ArrowRightIcon, CodeIcon, PencilRulerIcon, LightbulbIcon, SparklesIcon, CheckIcon } from './Icons';
 import CodeEditor from './CodeEditor';
 import Timer from './Timer';
@@ -53,11 +55,12 @@ const ResultBadge: React.FC<{ status: SubmissionStatus }> = ({ status }) => {
 interface TestBuddyProps {
     learnVaultContent: string;
     onNavigateToVault: () => void;
-    onQuizComplete: (result: { score: number, totalQuestions: number, topic: string }) => void;
-    onCodingAttempt: (attempt: Omit<CodingAttempt, 'timestamp'>) => void;
+    onMcqComplete: (result: { score: number, total: number, topic: string }) => void;
+    onCodingSuccess: () => void;
 }
 
-const TestBuddy: React.FC<TestBuddyProps> = ({ learnVaultContent, onNavigateToVault, onQuizComplete, onCodingAttempt }) => {
+const TestBuddy: React.FC<TestBuddyProps> = ({ learnVaultContent, onNavigateToVault, onMcqComplete, onCodingSuccess }) => {
+    const { user } = useAuth();
     const [view, setView] = useState<TestBuddyView>('initial');
     const [isTopicProgramming, setIsTopicProgramming] = useState<boolean | null>(null);
     const [isLoading, setIsLoading] = useState(true);
@@ -78,7 +81,8 @@ const TestBuddy: React.FC<TestBuddyProps> = ({ learnVaultContent, onNavigateToVa
     const [code, setCode] = useState('');
     const [isExecuting, setIsExecuting] = useState(false);
     const [runResults, setRunResults] = useState<TestCaseResult[] | null>(null);
-    const [submissionResult, setSubmissionResult] = useState<SubmissionResult | null>(null);
+    const [submissionResults, setSubmissionResults] = useState<(SubmissionResult & { passed: boolean; input: string; expected: string; })[] | null>(null);
+    const [overallSubmissionStatus, setOverallSubmissionStatus] = useState<SubmissionStatus | null>(null);
     const [hint, setHint] = useState<string | null>(null);
     const [isHintLoading, setIsHintLoading] = useState(false);
     const [activeResultTab, setActiveResultTab] = useState<ActiveResultTab>('run');
@@ -103,7 +107,8 @@ const TestBuddy: React.FC<TestBuddyProps> = ({ learnVaultContent, onNavigateToVa
             const problem = codingProblems[activeCodingProblemIndex];
             setCode(problem.starterCode[language]);
             setRunResults(null);
-            setSubmissionResult(null);
+            setSubmissionResults(null);
+            setOverallSubmissionStatus(null);
             setHint(null);
         }
     }, [activeCodingProblemIndex, language, codingProblems]);
@@ -147,9 +152,13 @@ const TestBuddy: React.FC<TestBuddyProps> = ({ learnVaultContent, onNavigateToVa
                 score++;
             }
         });
-        onQuizComplete({ score, totalQuestions: mcqQuestions.length, topic: mcqTopic });
+        if (user) {
+            const result = { score, total: mcqQuestions.length, topic: mcqTopic };
+            addMcqResult(user.uid, { ...result, completedAt: new Date().toISOString() });
+            onMcqComplete(result);
+        }
         setView('mcq_results');
-    }, [mcqQuestions, mcqTopic, onQuizComplete]);
+    }, [mcqQuestions, mcqTopic, onMcqComplete, user]);
 
     const handleFetchCodingProblems = useCallback(async (difficulty: CodingProblemDifficulty) => {
         setIsLoading(true);
@@ -173,7 +182,7 @@ const TestBuddy: React.FC<TestBuddyProps> = ({ learnVaultContent, onNavigateToVa
         if (!problem || isExecuting) return;
         setIsExecuting(true);
         setActiveResultTab('run');
-        setSubmissionResult(null);
+        setSubmissionResults(null);
         setHint(null);
 
         const examplePromises = problem.examples.map(example =>
@@ -193,55 +202,66 @@ const TestBuddy: React.FC<TestBuddyProps> = ({ learnVaultContent, onNavigateToVa
     };
 
     const handleSubmitCode = async () => {
+        if (!user) return;
         const problem = codingProblems[activeCodingProblemIndex];
         if (!problem || isExecuting) return;
+        
         setIsExecuting(true);
         setActiveResultTab('submit');
         setRunResults(null);
         setHint(null);
+        setSubmissionResults([]);
+        setOverallSubmissionStatus('Running');
 
+        const resultsForFirestore: TestCaseResultForFirestore[] = [];
+        let allPassed = true;
+        
         for (const testCase of problem.testCases) {
-            setSubmissionResult({ status: 'Running' });
             const result = await createSubmission(language, code, testCase.input, testCase.output);
-            if (result.status !== 'Accepted') {
-                const finalResult = { ...result, failedInput: testCase.input };
-                setSubmissionResult(finalResult);
-                onCodingAttempt({
-                    problemTitle: problem.title,
-                    problemDifficulty: problem.difficulty,
-                    language,
-                    code,
-                    status: result.status
-                });
-                setIsExecuting(false);
-                return;
+            const passed = result.status === 'Accepted';
+            
+            resultsForFirestore.push({
+                input: testCase.input,
+                expected: testCase.output,
+                actual: result.stdout || result.stderr || '',
+                passed,
+            });
+
+            setSubmissionResults(prev => [...(prev || []), { ...result, passed, input: testCase.input, expected: testCase.output }]);
+
+            if (!passed) {
+                allPassed = false;
+                setOverallSubmissionStatus(result.status);
+                break; // Stop on first failure
             }
         }
+        
+        if (allPassed) {
+            setOverallSubmissionStatus('Accepted');
+            setIsCodingTimerRunning(false);
+            // Save to Firestore
+            await addTestResult(user.uid, problem.id, { language, testCases: resultsForFirestore });
+            await updateUserOnSuccess(user.uid);
+            onCodingSuccess();
+        }
 
-        const finalResult: SubmissionResult = { status: 'Accepted' };
-        setSubmissionResult(finalResult);
-        onCodingAttempt({
-             problemTitle: problem.title,
-             problemDifficulty: problem.difficulty,
-             language,
-             code,
-             status: finalResult.status
-        });
         setIsExecuting(false);
-        setIsCodingTimerRunning(false);
     };
     
     const handleGetHint = async () => {
         const problem = codingProblems[activeCodingProblemIndex];
-        if (!problem || isHintLoading || !submissionResult || submissionResult.status === 'Accepted') return;
+        if (!problem || isHintLoading || !submissionResults || submissionResults.length === 0) return;
+        
+        const failedTest = submissionResults.find(r => !r.passed);
+        if (!failedTest) return;
 
         setIsHintLoading(true);
         setHint('');
         try {
             const hintText = await generateCodeHint(problem, code, {
-                input: submissionResult.failedInput || '',
-                expected: submissionResult.expectedOutput || '',
-                actual: submissionResult.stdout || ''
+                input: failedTest.input,
+                expected: failedTest.expected,
+                actual: failedTest.stdout || ''
             });
             setHint(hintText);
         } catch (e) {
@@ -256,7 +276,6 @@ const TestBuddy: React.FC<TestBuddyProps> = ({ learnVaultContent, onNavigateToVa
     const resetState = () => {
         setView('initial');
         setError(null);
-        // Reset all states if needed
     };
 
     if (isLoading) {
@@ -420,7 +439,7 @@ const TestBuddy: React.FC<TestBuddyProps> = ({ learnVaultContent, onNavigateToVa
                                         <div className="space-y-2">
                                             {runResults.map((res, i) => (
                                                 <div key={i} className={`p-2 rounded-md ${res.status === 'Passed' ? 'bg-green-50 dark:bg-green-900/40' : 'bg-red-50 dark:bg-red-900/40'}`}>
-                                                    <p className="font-semibold text-sm flex items-center gap-2">{res.status === 'Passed' ? <CheckCircleIcon className="h-5 w-5 text-green-500"/> : <XCircleIcon className="h-5 w-5 text-red-500"/>} Test Case #{i + 1}</p>
+                                                    <p className="font-semibold text-sm flex items-center gap-2">{res.status === 'Passed' ? <CheckCircleIcon className="h-5 w-5 text-green-500"/> : <XCircleIcon className="h-5 w-5 text-red-500"/>} Example #{i + 1}</p>
                                                      {res.status === 'Failed' && (
                                                         <div className="text-xs font-mono mt-1 pl-7">
                                                             <p>Expected: <code className="bg-gray-200 dark:bg-gray-700 p-1 rounded">{res.expectedOutput}</code></p>
@@ -433,21 +452,58 @@ const TestBuddy: React.FC<TestBuddyProps> = ({ learnVaultContent, onNavigateToVa
                                     ) : <p className="text-sm text-gray-500">Run code to see results against examples.</p>
                                 )}
                                 {activeResultTab === 'submit' && (
-                                    submissionResult ? (
+                                    overallSubmissionStatus ? (
                                         <div>
-                                            <ResultBadge status={submissionResult.status} />
-                                            {submissionResult.status !== 'Accepted' && submissionResult.status !== 'Running' && (
-                                                <div className="mt-2 text-sm">
-                                                    <p className="font-semibold">Failed on hidden test case.</p>
-                                                    <button onClick={handleGetHint} disabled={isHintLoading} className="mt-2 flex items-center gap-1.5 px-3 py-1.5 text-sm font-semibold text-white bg-blue-500 rounded-lg hover:bg-blue-600 disabled:opacity-50">
-                                                        <SparklesIcon className="h-4 w-4" />
-                                                        {isHintLoading ? 'Thinking...' : 'Get a Hint'}
-                                                    </button>
-                                                    {hint && (
-                                                        <div className="mt-2 p-2 bg-gray-100 dark:bg-gray-700/50 rounded-lg italic text-gray-700 dark:text-gray-300">
-                                                          <p className="flex items-start gap-2"><LightbulbIcon className="h-4 w-4 mt-0.5 text-yellow-500 flex-shrink-0" /> {hint}</p>
-                                                        </div>
-                                                    )}
+                                            <ResultBadge status={overallSubmissionStatus} />
+                                             <div className="mt-2 grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
+                                                {submissionResults?.map((res, i) => (
+                                                    <div key={i} className={`flex items-center gap-2 p-2 rounded-md text-sm font-medium ${res.passed ? 'bg-green-100 dark:bg-green-900/50 text-green-800 dark:text-green-300' : 'bg-red-100 dark:bg-red-900/50 text-red-800 dark:text-red-300'}`}>
+                                                        {res.passed ? <CheckIcon className="h-4 w-4"/> : <XCircleIcon className="h-4 w-4"/>}
+                                                        Test #{i+1}
+                                                    </div>
+                                                ))}
+                                            </div>
+                                            {overallSubmissionStatus !== 'Accepted' && overallSubmissionStatus !== 'Running' && (
+                                                <div className="mt-4">
+                                                    {(() => {
+                                                        const failedTest = submissionResults?.find(r => !r.passed);
+                                                        const failedTestIndex = failedTest ? submissionResults!.indexOf(failedTest) + 1 : 0;
+                                                        if (!failedTest) return null;
+
+                                                        return (
+                                                            <>
+                                                                <div className="p-3 bg-gray-50 dark:bg-gray-900/50 rounded-lg text-sm">
+                                                                    <h4 className="font-semibold text-gray-800 dark:text-white mb-2">Failed on Test Case #{failedTestIndex}</h4>
+                                                                    <div className="space-y-2 font-mono">
+                                                                        <div>
+                                                                            <p className="font-sans font-semibold text-gray-500 dark:text-gray-400">Input:</p>
+                                                                            <pre className="p-2 bg-gray-200 dark:bg-gray-700 rounded whitespace-pre-wrap"><code>{failedTest.input}</code></pre>
+                                                                        </div>
+                                                                        <div>
+                                                                            <p className="font-sans font-semibold text-gray-500 dark:text-gray-400">Expected Output:</p>
+                                                                            <pre className="p-2 bg-gray-200 dark:bg-gray-700 rounded whitespace-pre-wrap"><code>{failedTest.expected}</code></pre>
+                                                                        </div>
+                                                                        <div>
+                                                                            <p className="font-sans font-semibold text-gray-500 dark:text-gray-400">Your Output:</p>
+                                                                            <pre className={`p-2 rounded whitespace-pre-wrap ${failedTest.stderr ? 'bg-red-100 dark:bg-red-900/50 text-red-800 dark:text-red-200' : 'bg-gray-200 dark:bg-gray-700'}`}><code>{failedTest.stdout || failedTest.stderr || 'No output'}</code></pre>
+                                                                        </div>
+                                                                    </div>
+                                                                </div>
+
+                                                                <div className="mt-2 text-sm">
+                                                                    <button onClick={handleGetHint} disabled={isHintLoading} className="mt-2 flex items-center gap-1.5 px-3 py-1.5 text-sm font-semibold text-white bg-blue-500 rounded-lg hover:bg-blue-600 disabled:opacity-50">
+                                                                        <SparklesIcon className="h-4 w-4" />
+                                                                        {isHintLoading ? 'Thinking...' : 'Get a Hint'}
+                                                                    </button>
+                                                                    {hint && (
+                                                                        <div className="mt-2 p-2 bg-gray-100 dark:bg-gray-700/50 rounded-lg italic text-gray-700 dark:text-gray-300">
+                                                                            <p className="flex items-start gap-2"><LightbulbIcon className="h-4 w-4 mt-0.5 text-yellow-500 flex-shrink-0" /> {hint}</p>
+                                                                        </div>
+                                                                    )}
+                                                                </div>
+                                                            </>
+                                                        );
+                                                    })()}
                                                 </div>
                                             )}
                                         </div>

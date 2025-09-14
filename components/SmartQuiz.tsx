@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useMemo } from 'react';
 import { generateQuiz } from '../services/geminiService';
 import { type QuizQuestion, type QuizConfig } from '../types';
@@ -9,7 +8,7 @@ type QuizState = 'config' | 'loading' | 'active' | 'results';
 interface SmartQuizProps {
     learnVaultContent: string;
     onNavigateToVault: () => void;
-    onQuizComplete: (result: { score: number, totalQuestions: number, topic: string }) => void;
+    onQuizComplete: (result: { score: number, total: number, topic: string }) => void;
 }
 
 const ExplanationCard: React.FC<{ text: string }> = ({ text }) => {
@@ -33,13 +32,22 @@ const ExplanationCard: React.FC<{ text: string }> = ({ text }) => {
             return;
         }
 
-        if (isSpeaking) {
-            speechSynthesis.cancel(); // Simple stop
-            setIsSpeaking(false);
-            setCurrentWordIndex(-1);
+        const wasSpeaking = isSpeaking;
+
+        // Always cancel to clear the queue and stop current speech.
+        // This prevents the "interrupted" error.
+        speechSynthesis.cancel();
+        
+        // Reset state immediately after cancelling.
+        setIsSpeaking(false);
+        setCurrentWordIndex(-1);
+
+        // If the intention was to stop, we're done.
+        if (wasSpeaking) {
             return;
         }
 
+        // If the intention was to start, create and speak a new utterance.
         const utterance = new SpeechSynthesisUtterance(text);
         
         const voices = window.speechSynthesis.getVoices();
@@ -65,7 +73,8 @@ const ExplanationCard: React.FC<{ text: string }> = ({ text }) => {
             setCurrentWordIndex(-1);
         };
         
-        utterance.onerror = () => {
+        utterance.onerror = (e) => {
+             console.error("Speech synthesis error:", e);
              setIsSpeaking(false);
              setCurrentWordIndex(-1);
         };
@@ -112,7 +121,7 @@ const SmartQuiz: React.FC<SmartQuizProps> = ({ learnVaultContent, onNavigateToVa
 
     useEffect(() => {
         if (quizState === 'results') {
-            onQuizComplete({ score, totalQuestions: questions.length, topic: quizTopic });
+            onQuizComplete({ score, total: questions.length, topic: quizTopic });
         }
     }, [quizState, score, questions.length, onQuizComplete, quizTopic]);
 

@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useEffect, useState, ReactNode } from 'react';
 // Fix: Remove v9 imports. Auth state and doc fetching will use v8 syntax.
 import { auth, db } from '../services/firebaseConfig';
-import { type FirebaseUser, type UserData, QuizResult, CodingAttempt } from '../types';
+import { type FirebaseUser, type UserData, McqResult } from '../types';
 
 interface AuthContextType {
   user: FirebaseUser | null;
@@ -42,14 +42,11 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
               const sanitizedData = {
                 ...data,
                 createdAt: toISOString(data.createdAt),
-                quizHistory: (data.quizHistory || []).map((quiz: QuizResult) => ({
+                lastActive: toISOString(data.lastActive),
+                mcqHistory: (data.mcqHistory || []).map((quiz: McqResult) => ({
                   ...quiz,
-                  timestamp: toISOString(quiz.timestamp)
+                  completedAt: toISOString(quiz.completedAt)
                 })),
-                codingHistory: (data.codingHistory || []).map((attempt: CodingAttempt) => ({
-                  ...attempt,
-                  timestamp: toISOString(attempt.timestamp)
-                }))
               };
               
               setUserData({

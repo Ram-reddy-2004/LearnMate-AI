@@ -1,23 +1,26 @@
-// services/firebaseConfig.ts
-
+// Fix: Use firebase v9 compat imports to support v8 syntax.
 import firebase from "firebase/compat/app";
 import "firebase/compat/auth";
 import "firebase/compat/firestore";
 
+// NOTE: In a real-world app, these should be in environment variables.
+// As per the prompt, using the provided configuration directly.
 const firebaseConfig = {
-  apiKey: process.env.REACT_APP_FIREBASE_API_KEY,
-  authDomain: process.env.REACT_APP_FIREBASE_AUTH_DOMAIN,
-  projectId: process.env.REACT_APP_FIREBASE_PROJECT_ID,
-  storageBucket: process.env.REACT_APP_FIREBASE_STORAGE_BUCKET,
-  messagingSenderId: process.env.REACT_APP_FIREBASE_MESSAGING_SENDER_ID,
-  appId: process.env.REACT_APP_FIREBASE_APP_ID,
-  measurementId: process.env.REACT_APP_FIREBASE_MEASUREMENT_ID
+  apiKey: "AIzaSyDQLYksMjBpZu-v25cQhslaoIa48nadfc8",
+  authDomain: "learnmate-ai-82b4c.firebaseapp.com",
+  projectId: "learnmate-ai-82b4c",
+  storageBucket: "learnmate-ai-82b4c.appspot.com",
+  messagingSenderId: "613530799292",
+  appId: "1:613530799292:web:a0d480525122b3e23654b9",
+  measurementId: "G-0BE7WKL77S"
 };
 
+// Fix: Use Firebase v8 initialization pattern to prevent re-initialization on hot reloads.
 if (!firebase.apps.length) {
   firebase.initializeApp(firebaseConfig);
 }
 
+// Fix: Export v8-style auth and firestore instances.
 export const auth = firebase.auth();
 export const db = firebase.firestore();
-export { firebase };
+export { firebase }; // Export the firebase namespace for FieldValue usage.

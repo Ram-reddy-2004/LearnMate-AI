@@ -35,15 +35,16 @@ export const AuthPage: React.FC = () => {
                     lastName,
                     email,
                     createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+                    lastActive: firebase.firestore.FieldValue.serverTimestamp(),
                     progress: {
                       accuracy: 0,
                       weakTopics: [],
                       lastQuizScore: 0,
-                      timeSpent: 0
+                      timeSpent: 0,
+                      solvedProblems: 0,
                     },
                     learnVaultContent: '',
-                    quizHistory: [],
-                    codingHistory: [],
+                    mcqHistory: [],
                 });
 
                 setSuccessMessage('✅ Account created successfully! You are now logged in.');

@@ -1,12 +1,11 @@
 import React, { useMemo, useState, useEffect } from 'react';
-import { type QuizResult, type CodingAttempt, type UserData } from '../types';
+import { type McqResult, type UserData } from '../types';
 import { generateProgressInsights } from '../services/geminiService';
 import { LightbulbIcon, PencilRulerIcon, TrendingUpIcon, TargetIcon, AwardIcon, ClockIcon, HelpCircleIcon, CodeIcon } from './Icons';
 
 interface MyProgressProps {
     userData: UserData | null;
-    quizHistory: QuizResult[];
-    codingHistory: CodingAttempt[];
+    mcqHistory: McqResult[];
     onNavigateToQuiz: () => void;
 }
 
@@ -75,25 +74,23 @@ const LineChart: React.FC<{ data: { x: number, y: number }[] }> = ({ data }) => 
 };
 
 
-const MyProgress: React.FC<MyProgressProps> = ({ userData, quizHistory, codingHistory, onNavigateToQuiz }) => {
+const MyProgress: React.FC<MyProgressProps> = ({ userData, mcqHistory, onNavigateToQuiz }) => {
     const [insights, setInsights] = useState<string>('');
     const [isLoadingInsights, setIsLoadingInsights] = useState<boolean>(false);
 
     const stats = useMemo(() => {
-        const quizzesTaken = quizHistory.length;
+        const quizzesTaken = mcqHistory.length;
 
-        const totalCorrect = quizHistory.reduce((sum, result) => sum + result.score, 0);
-        const totalQuestions = quizHistory.reduce((sum, result) => sum + result.totalQuestions, 0);
+        const totalCorrect = mcqHistory.reduce((sum, result) => sum + result.score, 0);
+        const totalQuestions = mcqHistory.reduce((sum, result) => sum + result.total, 0);
         const overallAccuracy = totalQuestions > 0 ? Math.round((totalCorrect / totalQuestions) * 100) : 0;
         
-        const chartData = quizHistory.map((result, index) => ({
+        const chartData = mcqHistory.map((result, index) => ({
             x: index,
-            y: Math.round((result.score / result.totalQuestions) * 100),
+            y: Math.round((result.score / result.total) * 100),
         }));
-
-        const totalAttempts = codingHistory.length;
-        const acceptedAttempts = codingHistory.filter(a => a.status === 'Accepted').length;
-        const acceptanceRate = totalAttempts > 0 ? Math.round((acceptedAttempts / totalAttempts) * 100) : 0;
+        
+        const solvedProblems = userData?.progress?.solvedProblems || 0;
 
         let weakestTopic;
         if (quizzesTaken === 0) {
@@ -102,12 +99,12 @@ const MyProgress: React.FC<MyProgressProps> = ({ userData, quizHistory, codingHi
              weakestTopic = { name: "Not enough data yet", color: "bg-gray-500", icon: <HelpCircleIcon className="h-6 w-6 text-white"/>, };
         } else {
             const topicStats: Record<string, { totalScore: number; totalQuestions: number }> = {};
-            quizHistory.forEach(result => {
+            mcqHistory.forEach(result => {
                 if (!topicStats[result.topic]) {
                     topicStats[result.topic] = { totalScore: 0, totalQuestions: 0 };
                 }
                 topicStats[result.topic].totalScore += result.score;
-                topicStats[result.topic].totalQuestions += result.totalQuestions;
+                topicStats[result.topic].totalQuestions += result.total;
             });
 
             let weakestTopicName = '';
@@ -139,21 +136,19 @@ const MyProgress: React.FC<MyProgressProps> = ({ userData, quizHistory, codingHi
             quizzesTaken,
             chartData,
             weakestTopic,
-            totalAttempts,
-            acceptanceRate,
+            solvedProblems,
         };
-    }, [quizHistory, codingHistory]);
+    }, [mcqHistory, userData]);
 
     useEffect(() => {
-        if (quizHistory.length > 0 || codingHistory.length > 0) {
+        if (mcqHistory.length > 0 || stats.solvedProblems > 0) {
             const fetchInsights = async () => {
                 setIsLoadingInsights(true);
                 const summary = `
                     Quizzes Taken: ${stats.quizzesTaken}
                     Quiz Accuracy: ${stats.overallAccuracy}%
                     Recent Quiz Scores (as percentages): ${stats.chartData.slice(-5).map(d => `${d.y}%`).join(', ')}
-                    Coding Challenges Attempted: ${stats.totalAttempts}
-                    Coding Acceptance Rate: ${stats.acceptanceRate}%
+                    Coding Problems Solved: ${stats.solvedProblems}
                     Identified Weakest Quiz Topic: ${stats.weakestTopic.name.includes('data') || stats.weakestTopic.name.includes('strong') ? 'N/A' : stats.weakestTopic.name}
                 `;
                 const aiInsight = await generateProgressInsights(summary);
@@ -162,9 +157,9 @@ const MyProgress: React.FC<MyProgressProps> = ({ userData, quizHistory, codingHi
             };
             fetchInsights();
         }
-    }, [quizHistory, codingHistory, stats]);
+    }, [mcqHistory, stats]);
 
-    if (quizHistory.length === 0 && codingHistory.length === 0) {
+    if (mcqHistory.length === 0 && stats.solvedProblems === 0) {
         return (
             <div className="w-full h-full flex flex-col items-center justify-center text-center p-4">
                 <div className="mt-8 p-8 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg">
@@ -189,7 +184,7 @@ const MyProgress: React.FC<MyProgressProps> = ({ userData, quizHistory, codingHi
             
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
                 <StatCard icon={<TrendingUpIcon className="h-6 w-6 text-white"/>} title="Quiz Accuracy" value={`${stats.overallAccuracy}%`} color="bg-green-500" />
-                <StatCard icon={<CodeIcon className="h-6 w-6 text-white"/>} title="Coding Acceptance" value={`${stats.acceptanceRate}%`} color="bg-indigo-500" />
+                <StatCard icon={<CodeIcon className="h-6 w-6 text-white"/>} title="Problems Solved" value={`${stats.solvedProblems}`} color="bg-indigo-500" />
                 <StatCard icon={<PencilRulerIcon className="h-6 w-6 text-white"/>} title="Quizzes Taken" value={stats.quizzesTaken.toString()} color="bg-yellow-500" />
                 <StatCard icon={stats.weakestTopic.icon} title="Weakest Topic" value={stats.weakestTopic.name} color={stats.weakestTopic.color} />
             </div>
@@ -214,36 +209,26 @@ const MyProgress: React.FC<MyProgressProps> = ({ userData, quizHistory, codingHi
                 </div>
             </div>
 
-            {codingHistory.length > 0 && (
+             {mcqHistory.length > 0 && (
                 <div className="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-md border border-gray-200 dark:border-gray-700">
-                    <h2 className="text-xl font-bold text-gray-800 dark:text-white mb-4">Coding History</h2>
+                    <h2 className="text-xl font-bold text-gray-800 dark:text-white mb-4">Recent Quizzes</h2>
                     <div className="overflow-x-auto">
                         <table className="w-full text-left">
                             <thead>
                                 <tr className="border-b border-gray-200 dark:border-gray-700">
-                                    <th className="p-3">Problem</th>
-                                    <th className="p-3">Difficulty</th>
-                                    <th className="p-3">Language</th>
-                                    <th className="p-3">Status</th>
+                                    <th className="p-3">Topic</th>
+                                    <th className="p-3">Score</th>
+                                    <th className="p-3">Accuracy</th>
                                     <th className="p-3">Date</th>
                                 </tr>
                             </thead>
                             <tbody>
-                                {codingHistory.slice().reverse().map((attempt, index) => (
+                                {mcqHistory.slice().reverse().slice(0, 5).map((attempt, index) => (
                                     <tr key={index} className="border-b border-gray-100 dark:border-gray-700/50">
-                                        <td className="p-3 font-medium">{attempt.problemTitle}</td>
-                                        <td className="p-3">{attempt.problemDifficulty}</td>
-                                        <td className="p-3">{attempt.language}</td>
-                                        <td className="p-3">
-                                            <span className={`px-2 py-1 text-xs font-semibold rounded-full ${
-                                                attempt.status === 'Accepted' 
-                                                ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200' 
-                                                : 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200'
-                                            }`}>
-                                                {attempt.status}
-                                            </span>
-                                        </td>
-                                        <td className="p-3 text-sm text-gray-500 dark:text-gray-400">{new Date(attempt.timestamp).toLocaleDateString()}</td>
+                                        <td className="p-3 font-medium">{attempt.topic}</td>
+                                        <td className="p-3">{attempt.score} / {attempt.total}</td>
+                                        <td className="p-3 font-semibold text-blue-600 dark:text-blue-400">{Math.round((attempt.score / attempt.total) * 100)}%</td>
+                                        <td className="p-3 text-sm text-gray-500 dark:text-gray-400">{new Date(attempt.completedAt).toLocaleDateString()}</td>
                                     </tr>
                                 ))}
                             </tbody>

@@ -36,13 +36,14 @@ export interface QuizConfig {
   numQuestions: number;
 }
 
-// Types for MyProgress feature
-export interface QuizResult {
+// Types for MyProgress feature / MCQ Results
+export interface McqResult {
   score: number;
-  totalQuestions: number;
-  topic: string; // e.g., 'Algebra', 'History' - simulated for now
-  timestamp: string;
+  total: number;
+  topic: string;
+  completedAt: string;
 }
+
 
 // Types for TestBuddy feature
 export type CodingProblemDifficulty = 'Easy' | 'Medium' | 'Hard';
@@ -91,14 +92,18 @@ export interface TestCaseResult {
     error?: string;
 }
 
+// Minimal result object for storing in Firestore subcollection
+export interface TestCaseResultForFirestore {
+    input: string;
+    expected: string;
+    actual: string;
+    passed: boolean;
+}
 
-export interface CodingAttempt {
-    problemTitle: string;
-    problemDifficulty: CodingProblemDifficulty;
+export interface TestResultForFirestore {
     language: Language;
-    code: string;
-    status: SubmissionStatus;
-    timestamp: string;
+    testCases: TestCaseResultForFirestore[];
+    submittedAt: any; // Will be a Firestore ServerTimestamp
 }
 
 
@@ -138,6 +143,7 @@ export interface UserProgress {
   weakTopics: string[];
   lastQuizScore: number;
   timeSpent: number;
+  solvedProblems: number;
 }
 
 export interface UserData {
@@ -146,8 +152,8 @@ export interface UserData {
   lastName: string;
   email: string;
   createdAt: string; // ISO String Date
+  lastActive: string; // ISO String Date
   progress: UserProgress;
   learnVaultContent: string;
-  quizHistory: QuizResult[];
-  codingHistory: CodingAttempt[];
+  mcqHistory: McqResult[];
 }

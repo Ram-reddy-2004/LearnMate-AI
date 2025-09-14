@@ -1,6 +1,6 @@
 // Fix: Import db and firebase instances from the v8-compatible config.
 import { db, firebase } from './firebaseConfig';
-import { type QuizResult, type CodingAttempt } from '../types';
+import { type McqResult, type TestResultForFirestore } from '../types';
 
 /**
  * Appends new content to the user's LearnVault in Firestore.
@@ -15,23 +15,34 @@ export const updateLearnVault = async (uid: string, newContent: string, existing
 };
 
 /**
- * Adds a new quiz result to the user's history in Firestore.
+ * Adds a new MCQ result to the user's history in Firestore.
  */
-export const addQuizResult = async (uid: string, result: QuizResult): Promise<void> => {
+export const addMcqResult = async (uid: string, result: McqResult): Promise<void> => {
     // Fix: Use v8 syntax for document reference and array updates.
     const userDocRef = db.collection('users').doc(uid);
     await userDocRef.update({
-        quizHistory: firebase.firestore.FieldValue.arrayUnion(result)
+        mcqHistory: firebase.firestore.FieldValue.arrayUnion(result)
     });
 };
 
 /**
- * Adds a new coding attempt to the user's history in Firestore.
+ * Saves a detailed coding test result to a subcollection for that user.
  */
-export const addCodingAttempt = async (uid: string, attempt: CodingAttempt): Promise<void> => {
-    // Fix: Use v8 syntax for document reference and array updates.
+export const addTestResult = async (uid: string, problemId: string, result: Omit<TestResultForFirestore, 'submittedAt'>): Promise<void> => {
+    const resultWithTimestamp: TestResultForFirestore = {
+        ...result,
+        submittedAt: firebase.firestore.FieldValue.serverTimestamp()
+    };
+    await db.collection('users').doc(uid).collection('testResults').doc(problemId).set(resultWithTimestamp);
+};
+
+/**
+ * Updates the main user document's progress after a successful coding submission.
+ */
+export const updateUserOnSuccess = async (uid: string): Promise<void> => {
     const userDocRef = db.collection('users').doc(uid);
     await userDocRef.update({
-        codingHistory: firebase.firestore.FieldValue.arrayUnion(attempt)
+        'progress.solvedProblems': firebase.firestore.FieldValue.increment(1),
+        lastActive: firebase.firestore.FieldValue.serverTimestamp()
     });
 };
