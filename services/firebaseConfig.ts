@@ -18,6 +18,17 @@ const firebaseConfig = {
 // Fix: Use Firebase v8 initialization pattern to prevent re-initialization on hot reloads.
 if (!firebase.apps.length) {
   firebase.initializeApp(firebaseConfig);
+  // Enable offline persistence to handle network issues gracefully.
+  firebase.firestore().enablePersistence()
+    .catch((err) => {
+      if (err.code == 'failed-precondition') {
+        // This can happen if multiple tabs are open.
+        console.warn('Firestore persistence failed: multiple tabs open.');
+      } else if (err.code == 'unimplemented') {
+        // The browser is likely old or misconfigured.
+        console.warn('Firestore persistence not supported in this browser.');
+      }
+    });
 }
 
 // Fix: Export v8-style auth and firestore instances.

@@ -13,12 +13,23 @@ import TestBuddy from './components/TestBuddy';
 import SkillPath from './components/SkillPath';
 import LearnGuide from './components/LearnGuide';
 import { AuthPage } from './components/AuthPage';
+import { ModuleLoadingIndicator } from './components/LoadingIndicators';
 import { type Message, Sender, type McqResult, UserData } from './types';
 import { generateContent } from './services/geminiService';
 import { updateLearnVault, addMcqResult, updateUserOnSuccess } from './services/firebaseService';
 
+const OfflineBanner: React.FC = () => (
+    <div className="fixed bottom-4 left-1/2 -translate-x-1/2 bg-gray-800 dark:bg-gray-200 text-white dark:text-black text-center p-3 rounded-lg shadow-lg z-50 text-sm font-medium">
+        <div className="flex items-center justify-center gap-2">
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" x2="12.01" y1="20" y2="20"/><line x1="2" x2="22" y1="2" y2="22"/></svg>
+            <span>You are currently offline. Changes will sync when you reconnect.</span>
+        </div>
+    </div>
+);
+
+
 const App: React.FC = () => {
-  const { user, userData, isLoading: isAuthLoading } = useAuth();
+  const { user, userData, isLoading: isAuthLoading, isOffline } = useAuth();
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(false);
@@ -139,10 +150,7 @@ const App: React.FC = () => {
   if (isAuthLoading) {
     return (
         <div className="flex items-center justify-center min-h-screen">
-            <svg className="animate-spin h-10 w-10 text-blue-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-            </svg>
+            <ModuleLoadingIndicator text="Authenticating..." />
         </div>
     );
   }
@@ -190,6 +198,7 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen w-full font-sans bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 flex">
+      {isOffline && <OfflineBanner />}
       <ModuleSidebar 
         isOpen={isSidebarOpen}
         setIsOpen={setIsSidebarOpen}

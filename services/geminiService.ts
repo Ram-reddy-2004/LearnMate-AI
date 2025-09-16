@@ -183,6 +183,7 @@ export const generateQuiz = async (sourceText: string, config: QuizConfig): Prom
             config: {
                 responseMimeType: "application/json",
                 responseSchema: quizSchema,
+                thinkingConfig: { thinkingBudget: 0 },
             },
         });
 
@@ -204,69 +205,74 @@ export const generateQuiz = async (sourceText: string, config: QuizConfig): Prom
     }
 }
 
+const solutionCodeDescription = "The raw, clean, and optimal solution code. The string MUST NOT contain any HTML, CSS, or markdown formatting. It should only be the code itself, without any surrounding comments explaining the problem.";
 
-const codingProblemSchema = {
+const singleCodingProblemSchema = {
     type: Type.OBJECT,
     properties: {
-        problems: {
+        id: { type: Type.STRING, description: "A unique identifier for the problem, e.g., 'two-sum-easy'." },
+        title: { type: Type.STRING, description: "The title of the coding problem." },
+        difficulty: { type: Type.STRING, enum: ["Easy", "Medium", "Hard"] },
+        description: { type: Type.STRING, description: "A detailed description of the problem." },
+        constraints: { type: Type.ARRAY, items: { type: Type.STRING }, description: "A list of constraints for the input values." },
+        examples: {
             type: Type.ARRAY,
-            description: "An array of coding problems.",
             items: {
                 type: Type.OBJECT,
                 properties: {
-                    id: { type: Type.STRING, description: "A unique identifier for the problem, e.g., 'two-sum-easy'." },
-                    title: { type: Type.STRING, description: "The title of the coding problem." },
-                    difficulty: { type: Type.STRING, enum: ["Easy", "Medium", "Hard"] },
-                    description: { type: Type.STRING, description: "A detailed description of the problem." },
-                    constraints: { type: Type.ARRAY, items: { type: Type.STRING }, description: "A list of constraints for the input values." },
-                    examples: {
-                        type: Type.ARRAY,
-                        items: {
-                            type: Type.OBJECT,
-                            properties: {
-                                input: { type: Type.STRING, description: "Example input, formatted as key-value pairs. e.g., 'nums = [2, 7, 11, 15], target = 9'" },
-                                output: { type: Type.STRING, description: "Expected output for the example." },
-                                explanation: { type: Type.STRING, description: "Optional explanation for the example." }
-                            },
-                            required: ["input", "output"]
-                        }
-                    },
-                    testCases: {
-                        type: Type.ARRAY,
-                        description: "An array of 5-10 hidden test cases with varied inputs to validate the solution.",
-                        items: {
-                            type: Type.OBJECT,
-                            properties: {
-                                input: { type: Type.STRING, description: "Test case input, formatted for programmatic use. E.g., for two inputs `[2,7,11,15]` and `9`, format as `[2,7,11,15]\\n9`." },
-                                output: { type: Type.STRING, description: "Expected output for the test case." }
-                            },
-                            required: ["input", "output"]
-                        }
-                    },
-                    starterCode: {
-                        type: Type.OBJECT,
-                        description: "Boilerplate code for each supported language.",
-                        properties: {
-                            javascript: { type: Type.STRING, description: "Starter code for JavaScript." },
-                            python: { type: Type.STRING, description: "Starter code for Python." },
-                            java: { type: Type.STRING, description: "Starter code for Java." },
-                            c: { type: Type.STRING, description: "Starter code for C." },
-                        },
-                        required: ["javascript", "python", "java", "c"]
-                    }
+                    input: { type: Type.STRING, description: "Example input, formatted as key-value pairs. e.g., 'nums = [2, 7, 11, 15], target = 9'" },
+                    output: { type: Type.STRING, description: "Expected output for the example." },
+                    explanation: { type: Type.STRING, description: "Optional explanation for the example." }
                 },
-                required: ["id", "title", "difficulty", "description", "constraints", "examples", "testCases", "starterCode"]
+                required: ["input", "output"]
             }
+        },
+        testCases: {
+            type: Type.ARRAY,
+            description: "An array of 5-10 hidden test cases with varied inputs to validate the solution.",
+            items: {
+                type: Type.OBJECT,
+                properties: {
+                    input: { type: Type.STRING, description: "Test case input, formatted for programmatic use. E.g., for two inputs `[2,7,11,15]` and `9`, format as `[2,7,11,15]\\n9`." },
+                    output: { type: Type.STRING, description: "Expected output for the test case." }
+                },
+                required: ["input", "output"]
+            }
+        },
+        starterCode: {
+            type: Type.OBJECT,
+            description: "Boilerplate code for each supported language.",
+            properties: {
+                javascript: { type: Type.STRING, description: "Starter code for JavaScript." },
+                python: { type: Type.STRING, description: "Starter code for Python." },
+                java: { type: Type.STRING, description: "Starter code for Java." },
+                c: { type: Type.STRING, description: "Starter code for C." },
+            },
+            required: ["javascript", "python", "java", "c"]
+        },
+        solution: {
+            type: Type.OBJECT,
+            description: "An optimal and correct solution for the problem for each supported language.",
+            properties: {
+                javascript: { type: Type.STRING, description: solutionCodeDescription },
+                python: { type: Type.STRING, description: solutionCodeDescription },
+                java: { type: Type.STRING, description: solutionCodeDescription },
+                c: { type: Type.STRING, description: solutionCodeDescription },
+            },
+            required: ["javascript", "python", "java", "c"]
         }
     },
-    required: ["problems"]
+    required: ["id", "title", "difficulty", "description", "constraints", "examples", "testCases", "starterCode", "solution"]
 };
 
 /**
- * For TestBuddy: Generates coding problems based on source text and difficulty.
+ * For TestBuddy: Generates a single coding problem based on source text and difficulty.
  */
-export const generateCodingProblems = async (sourceText: string, difficulty: CodingProblemDifficulty): Promise<CodingProblem[]> => {
-    const prompt = `Based on the following knowledge base about programming concepts, generate 3 coding problems of '${difficulty}' difficulty. The problems should be relevant to the topics in the text. For each problem, provide a complete LeetCode-style definition including a unique id, title, detailed description, constraints, examples, hidden test cases, and starter code for JavaScript, Python, Java, and C. The 'input' for test cases should be formatted with newlines separating arguments for easy parsing.
+export const generateCodingProblem = async (sourceText: string, difficulty: CodingProblemDifficulty): Promise<CodingProblem> => {
+    const prompt = `Based on the following knowledge base about programming concepts, generate ONE new coding problem of '${difficulty}' difficulty.
+The problem must be a complete LeetCode-style definition.
+- The 'input' for test cases must be formatted with newlines separating arguments for easy parsing.
+- For the 'solution' field, provide only the raw, clean, and optimal code for each language. The code string MUST NOT contain any HTML, CSS, or markdown formatting. It should not have header comments (like Javadoc) that explain the problem; it should only be the implementation.
 
     Knowledge Base:
     ---
@@ -280,21 +286,23 @@ export const generateCodingProblems = async (sourceText: string, difficulty: Cod
             contents: prompt,
             config: {
                 responseMimeType: "application/json",
-                responseSchema: codingProblemSchema,
+                responseSchema: singleCodingProblemSchema,
+                thinkingConfig: { thinkingBudget: 0 },
             },
         });
 
         const jsonString = result.text.trim();
         const parsedResult = JSON.parse(jsonString);
         
-        if (!parsedResult.problems || !Array.isArray(parsedResult.problems)) {
-            throw new Error("AI response did not contain a valid 'problems' array.");
+        // Basic validation
+        if (!parsedResult.id || !parsedResult.title || !parsedResult.testCases || !parsedResult.solution) {
+            throw new Error("AI response did not contain a valid coding problem structure.");
         }
         
-        return parsedResult.problems as CodingProblem[];
+        return parsedResult as CodingProblem;
 
     } catch (error) {
-        console.error("Error generating coding problems:", error);
+        console.error("Error generating coding problem:", error);
         if (error instanceof Error) {
             throw new Error(`AI problem generation failed: ${error.message}`);
         }
@@ -337,6 +345,43 @@ export const generateCodeHint = async (problem: CodingProblem, userCode: string,
     }
 };
 
+/**
+ * For TestBuddy: Explains why a user's code failed a specific test case.
+ */
+export const generateFailureExplanation = async (problem: CodingProblem, userCode: string, failedTest: { input: string; expected: string; actual: string; }): Promise<string> => {
+    const prompt = `You are an expert debugging assistant. A student's code failed a test case. Your task is to explain exactly why the code produced the wrong output for the given input.
+
+    **Problem:** ${problem.title}
+    *Description:* ${problem.description}
+
+    **Student's Code:**
+    \`\`\`
+    ${userCode}
+    \`\`\`
+
+    **Failed Test Case:**
+    - **Input:** \`${failedTest.input}\`
+    - **Expected Output:** \`${failedTest.expected}\`
+    - **Actual Output from Code:** \`${failedTest.actual}\`
+
+    **Instructions:**
+    1.  Analyze the student's code logic.
+    2.  Trace the execution with the specific **Input**.
+    3.  Pinpoint the logical flaw that causes the **Actual Output** to differ from the **Expected Output**.
+    4.  Provide a concise, 2-3 sentence explanation. Start by directly stating the issue. For example: "Your code fails on this test case because it doesn't handle negative numbers correctly..." or "The logic incorrectly resets the counter inside the loop...". Do not be generic; be specific to the code and the failed test case.`;
+
+    try {
+        const result = await ai.models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: prompt,
+        });
+        return result.text;
+    } catch (error) {
+        console.error("Error generating failure explanation:", error);
+        return "Sorry, an error occurred while analyzing the failure. Please check your logic and try again.";
+    }
+};
+
 
 /**
  * For TestBuddy: Determines if a knowledge base is programming-related.
@@ -362,6 +407,7 @@ export const isProgrammingTopic = async (sourceText: string): Promise<boolean> =
                     },
                     required: ["isProgrammingTopic"]
                 },
+                thinkingConfig: { thinkingBudget: 0 },
             },
         });
         const jsonString = result.text.trim();
@@ -469,6 +515,7 @@ export const generateSkillPath = async (interests: string, skills: string): Prom
             config: {
                 responseMimeType: "application/json",
                 responseSchema: skillPathSchema,
+                thinkingConfig: { thinkingBudget: 0 },
             },
         });
         
@@ -544,7 +591,8 @@ ${knowledgeBase}
                         firstConcept: conceptSchema
                     },
                     required: ["concepts", "firstConcept"]
-                }
+                },
+                thinkingConfig: { thinkingBudget: 0 },
             }
         });
         const jsonString = result.text.trim();
@@ -572,7 +620,11 @@ ${knowledgeBase}
         const result = await ai.models.generateContent({
             model: 'gemini-2.5-flash',
             contents: prompt,
-            config: { responseMimeType: "application/json", responseSchema: conceptSchema }
+            config: { 
+                responseMimeType: "application/json", 
+                responseSchema: conceptSchema,
+                thinkingConfig: { thinkingBudget: 0 },
+            }
         });
         const jsonString = result.text.trim();
         return JSON.parse(jsonString);
@@ -594,7 +646,11 @@ If the topic is programming-related, ensure your new examples are clear, concise
         const result = await ai.models.generateContent({
             model: 'gemini-2.5-flash',
             contents: prompt,
-            config: { responseMimeType: "application/json", responseSchema: conceptSchema }
+            config: { 
+                responseMimeType: "application/json", 
+                responseSchema: conceptSchema,
+                thinkingConfig: { thinkingBudget: 0 },
+            }
         });
         const jsonString = result.text.trim();
         return JSON.parse(jsonString);

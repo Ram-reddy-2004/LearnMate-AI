@@ -69,6 +69,7 @@ export interface CodingProblem {
     examples: Example[];
     testCases: TestCase[]; // These are hidden from the user
     starterCode: Record<Language, string>;
+    solution: Record<Language, string>;
 }
 
 export type SubmissionStatus = 'Accepted' | 'Wrong Answer' | 'Runtime Error' | 'Time Limit Exceeded' | 'Compilation Error' | 'Pending' | 'Running';

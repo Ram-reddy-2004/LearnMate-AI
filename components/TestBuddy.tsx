@@ -1,16 +1,31 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { isProgrammingTopic, generateQuiz, generateCodingProblems, generateCodeHint } from '../services/geminiService';
+import { isProgrammingTopic, generateQuiz, generateCodingProblem, generateCodeHint, generateFailureExplanation } from '../services/geminiService';
 import { createSubmission } from '../services/judge0Service';
 import { addMcqResult, addTestResult, updateUserOnSuccess } from '../services/firebaseService';
 // Fix: Import the SubmissionStatus type.
 import { type CodingProblem, type CodingProblemDifficulty, type Language, type SubmissionResult, type QuizQuestion, type TestCaseResult, type SubmissionStatus, TestCaseResultForFirestore } from '../types';
-import { BrainCircuitIcon, FlaskConicalIcon, CheckCircleIcon, XCircleIcon, ClockIcon, PlayIcon, SendHorizonalIcon, ArrowRightIcon, CodeIcon, PencilRulerIcon, LightbulbIcon, SparklesIcon, CheckIcon } from './Icons';
+import { BrainCircuitIcon, FlaskConicalIcon, CheckCircleIcon, XCircleIcon, ClockIcon, PlayIcon, SendHorizonalIcon, ArrowRightIcon, CodeIcon, PencilRulerIcon, LightbulbIcon, SparklesIcon, CheckIcon, ClipboardIcon } from './Icons';
+import { ModuleLoadingIndicator, InlineLoadingIndicator } from './LoadingIndicators';
 import CodeEditor from './CodeEditor';
 import Timer from './Timer';
 
 type TestBuddyView = 'initial' | 'mcq' | 'coding_difficulty' | 'coding_workspace' | 'mcq_results';
 type ActiveResultTab = 'run' | 'submit';
+
+// Helper to parse line numbers from common error formats
+const parseError = (errorMessage: string): { lineNumber: number; message: string } | null => {
+    if (!errorMessage) return null;
+    // Common patterns: "line X", ":X:", "(X:Y)"
+    const match = errorMessage.match(/(?:line|:)(\s+)?(\d+)|[(\[](\d+):/);
+    if (match) {
+        const lineNumber = parseInt(match[2] || match[3], 10);
+        // Clean up the message
+        const cleanedMessage = errorMessage.replace(/^(Error: |.*:\d+:\d+:)/, '').trim();
+        return { lineNumber, message: cleanedMessage };
+    }
+    return { lineNumber: 1, message: errorMessage }; // Default to line 1 if no number found
+};
 
 
 const DifficultyButton: React.FC<{
@@ -29,7 +44,7 @@ const DifficultyButton: React.FC<{
             disabled={isLoading}
             className={`px-6 py-3 font-semibold rounded-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed ${colorClasses[difficulty]}`}
         >
-            {isLoading ? 'Generating...' : difficulty}
+            {isLoading ? <InlineLoadingIndicator /> : difficulty}
         </button>
     );
 };
@@ -51,6 +66,102 @@ const ResultBadge: React.FC<{ status: SubmissionStatus }> = ({ status }) => {
             return <span className={`${baseClass} bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-200`}>{status}...</span>;
     }
 };
+
+const SolutionViewer: React.FC<{ code: string; language: Language }> = ({ code, language }) => {
+    const [copied, setCopied] = useState(false);
+
+    const handleCopy = () => {
+        navigator.clipboard.writeText(code).then(() => {
+            setCopied(true);
+            setTimeout(() => setCopied(false), 2000);
+        });
+    };
+
+    // A robust syntax highlighter that tokenizes content first
+    const highlightSyntax = (codeStr: string) => {
+        const parts: (string | { type: 'string' | 'comment', content: string })[] = [];
+        let lastIndex = 0;
+        const tokenizerRegex = /(\/\*[\s\S]*?\*\/|\/\/.*)|("(?:\\.|[^"])*"|'(?:\\.|[^'])*'|`(?:\\.|[^`])*`)/g;
+
+        let match;
+        while ((match = tokenizerRegex.exec(codeStr)) !== null) {
+            if (match.index > lastIndex) {
+                parts.push(codeStr.substring(lastIndex, match.index));
+            }
+            if (match[1]) {
+                parts.push({ type: 'comment', content: match[1] });
+            } else if (match[2]) {
+                parts.push({ type: 'string', content: match[2] });
+            }
+            lastIndex = tokenizerRegex.lastIndex;
+        }
+
+        if (lastIndex < codeStr.length) {
+            parts.push(codeStr.substring(lastIndex));
+        }
+
+        const highlightCodeSegment = (segment: string) => {
+            const keywords = ['let', 'const', 'var', 'function', 'return', 'if', 'else', 'for', 'while', 'import', 'export', 'from', 'async', 'await', 'class', 'extends', 'super', 'new', 'try', 'catch', 'finally', 'throw', 'public', 'private', 'protected', 'static', 'void', 'int', 'string', 'boolean', 'true', 'false', 'null'];
+            const keywordRegex = new RegExp(`\\b(${keywords.join('|')})\\b`, 'g');
+            
+            let tempHighlighted = segment
+                .replace(keywordRegex, '[[KEYWORD]]$1[[/KEYWORD]]')
+                .replace(/\b(\d+)\b/g, '[[NUMBER]]$1[[/NUMBER]]')
+                .replace(/(\w+)(?=\()/g, '[[FUNCTION_CALL]]$1[[/FUNCTION_CALL]]');
+
+            const escaped = tempHighlighted.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+            return escaped
+                .replace(/\[\[KEYWORD\]\]/g, '<span class="text-blue-600 dark:text-blue-400 font-semibold">')
+                .replace(/\[\[\/KEYWORD\]\]/g, '</span>')
+                .replace(/\[\[NUMBER\]\]/g, '<span class="text-purple-600 dark:text-purple-400">')
+                .replace(/\[\[\/NUMBER\]\]/g, '</span>')
+                .replace(/\[\[FUNCTION_CALL\]\]/g, '<span class="text-yellow-700 dark:text-yellow-400">')
+                .replace(/\[\[\/FUNCTION_CALL\]\]/g, '</span>');
+        };
+
+        return parts.map(part => {
+            if (typeof part === 'string') {
+                return highlightCodeSegment(part);
+            }
+            const escapedContent = part.content.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            if (part.type === 'comment') {
+                return `<span class="text-gray-500 italic">${escapedContent}</span>`;
+            }
+            if (part.type === 'string') {
+                return `<span class="text-green-600 dark:text-green-400">${escapedContent}</span>`;
+            }
+            return '';
+        }).join('');
+    };
+
+    return (
+        <div className="mt-4 bg-gray-900 rounded-lg overflow-hidden border border-gray-700">
+            <div className="px-4 py-2 flex justify-between items-center bg-gray-800 border-b border-gray-700">
+                <span className="text-xs font-sans text-gray-400 font-semibold uppercase">{language} - Solution</span>
+                <button onClick={handleCopy} className="flex items-center gap-1.5 text-sm font-medium text-gray-300 hover:text-white transition-colors">
+                    {copied ? <CheckIcon className="h-4 w-4 text-green-500" /> : <ClipboardIcon className="h-4 w-4" />}
+                    {copied ? 'Copied' : 'Copy'}
+                </button>
+            </div>
+            <div className="p-4 overflow-x-auto">
+                <pre><code
+                    className="font-mono text-sm text-gray-200"
+                    dangerouslySetInnerHTML={{ __html: highlightSyntax(code) }}
+                /></pre>
+            </div>
+        </div>
+    );
+};
+
+
+const DraggableDivider: React.FC<{ onMouseDown: React.MouseEventHandler<HTMLDivElement>, direction: 'horizontal' | 'vertical' }> = ({ onMouseDown, direction }) => {
+    const baseClasses = 'bg-gray-200 dark:bg-gray-700 hover:bg-blue-500 dark:hover:bg-blue-500 transition-colors z-10';
+    const cursorClass = direction === 'horizontal' ? 'cursor-col-resize' : 'cursor-row-resize';
+    const sizeClasses = direction === 'horizontal' ? 'w-2 h-full' : 'h-2 w-full';
+    return <div onMouseDown={onMouseDown} className={`${baseClasses} ${cursorClass} ${sizeClasses} flex-shrink-0`}></div>;
+};
+
 
 interface TestBuddyProps {
     learnVaultContent: string;
@@ -75,8 +186,7 @@ const TestBuddy: React.FC<TestBuddyProps> = ({ learnVaultContent, onNavigateToVa
     const [isMcqTimerRunning, setIsMcqTimerRunning] = useState(false);
     
     // Coding State
-    const [codingProblems, setCodingProblems] = useState<CodingProblem[]>([]);
-    const [activeCodingProblemIndex, setActiveCodingProblemIndex] = useState(0);
+    const [activeCodingProblem, setActiveCodingProblem] = useState<CodingProblem | null>(null);
     const [language, setLanguage] = useState<Language>('javascript');
     const [code, setCode] = useState('');
     const [isExecuting, setIsExecuting] = useState(false);
@@ -85,10 +195,22 @@ const TestBuddy: React.FC<TestBuddyProps> = ({ learnVaultContent, onNavigateToVa
     const [overallSubmissionStatus, setOverallSubmissionStatus] = useState<SubmissionStatus | null>(null);
     const [hint, setHint] = useState<string | null>(null);
     const [isHintLoading, setIsHintLoading] = useState(false);
+    const [failureExplanation, setFailureExplanation] = useState<string | null>(null);
+    const [isExplanationLoading, setIsExplanationLoading] = useState(false);
     const [activeResultTab, setActiveResultTab] = useState<ActiveResultTab>('run');
     const [isCodingTimerRunning, setIsCodingTimerRunning] = useState(false);
     const [codingDifficulty, setCodingDifficulty] = useState<CodingProblemDifficulty | null>(null);
+    const [codeError, setCodeError] = useState<{ lineNumber: number; message: string } | null>(null);
+    const [showSolution, setShowSolution] = useState(false);
     
+    // Resizable panels state
+    const [horizontalSplit, setHorizontalSplit] = useState(50);
+    const [verticalSplit, setVerticalSplit] = useState(70);
+    const isDraggingHorizontal = useRef(false);
+    const isDraggingVertical = useRef(false);
+    const workspaceRef = useRef<HTMLDivElement>(null);
+    const rightPanelRef = useRef<HTMLDivElement>(null);
+
     // Check if topic is programming-related on mount
     useEffect(() => {
         if (!learnVaultContent.trim()) {
@@ -103,15 +225,18 @@ const TestBuddy: React.FC<TestBuddyProps> = ({ learnVaultContent, onNavigateToVa
 
     // Update code editor when active problem or language changes
     useEffect(() => {
-        if (codingProblems.length > 0) {
-            const problem = codingProblems[activeCodingProblemIndex];
-            setCode(problem.starterCode[language]);
+        if (activeCodingProblem) {
+            setCode(activeCodingProblem.starterCode[language]);
+            // Reset results and errors for the new problem/language
             setRunResults(null);
             setSubmissionResults(null);
             setOverallSubmissionStatus(null);
             setHint(null);
+            setFailureExplanation(null);
+            setCodeError(null);
+            setShowSolution(false);
         }
-    }, [activeCodingProblemIndex, language, codingProblems]);
+    }, [activeCodingProblem, language]);
     
     const handleStartMcq = useCallback(async () => {
         setIsLoading(true);
@@ -160,14 +285,13 @@ const TestBuddy: React.FC<TestBuddyProps> = ({ learnVaultContent, onNavigateToVa
         setView('mcq_results');
     }, [mcqQuestions, mcqTopic, onMcqComplete, user]);
 
-    const handleFetchCodingProblems = useCallback(async (difficulty: CodingProblemDifficulty) => {
+    const handleFetchCodingProblem = useCallback(async (difficulty: CodingProblemDifficulty) => {
         setIsLoading(true);
         setCodingDifficulty(difficulty);
         setError(null);
         try {
-            const fetchedProblems = await generateCodingProblems(learnVaultContent, difficulty);
-            setCodingProblems(fetchedProblems);
-            setActiveCodingProblemIndex(0);
+            const fetchedProblem = await generateCodingProblem(learnVaultContent, difficulty);
+            setActiveCodingProblem(fetchedProblem);
             setView('coding_workspace');
             setIsCodingTimerRunning(true);
         } catch (err) {
@@ -178,45 +302,53 @@ const TestBuddy: React.FC<TestBuddyProps> = ({ learnVaultContent, onNavigateToVa
     }, [learnVaultContent]);
 
     const handleRunCode = async () => {
-        const problem = codingProblems[activeCodingProblemIndex];
-        if (!problem || isExecuting) return;
+        if (!activeCodingProblem || isExecuting) return;
         setIsExecuting(true);
         setActiveResultTab('run');
         setSubmissionResults(null);
         setHint(null);
+        setFailureExplanation(null);
+        setCodeError(null);
 
-        const examplePromises = problem.examples.map(example =>
+        const examplePromises = activeCodingProblem.examples.map(example =>
             createSubmission(language, code, example.input, example.output)
         );
         const results = await Promise.all(examplePromises);
 
         setRunResults(results.map((res, index) => ({
-            input: problem.examples[index].input,
-            expectedOutput: problem.examples[index].output,
+            input: activeCodingProblem.examples[index].input,
+            expectedOutput: activeCodingProblem.examples[index].output,
             userOutput: res.stdout || res.stderr || 'No output',
             status: res.status === 'Accepted' ? 'Passed' : 'Failed',
             error: res.stderr || res.compile_output
         })));
         
+        // Check for compilation/runtime error in the first failed case to display in editor
+        const firstError = results.find(res => res.status === 'Compilation Error' || res.status === 'Runtime Error');
+        if (firstError) {
+            const parsed = parseError(firstError.compile_output || firstError.stderr || '');
+            setCodeError(parsed);
+        }
+        
         setIsExecuting(false);
     };
 
     const handleSubmitCode = async () => {
-        if (!user) return;
-        const problem = codingProblems[activeCodingProblemIndex];
-        if (!problem || isExecuting) return;
+        if (!user || !activeCodingProblem || isExecuting) return;
         
         setIsExecuting(true);
         setActiveResultTab('submit');
         setRunResults(null);
         setHint(null);
+        setFailureExplanation(null);
+        setCodeError(null);
         setSubmissionResults([]);
         setOverallSubmissionStatus('Running');
 
         const resultsForFirestore: TestCaseResultForFirestore[] = [];
         let allPassed = true;
         
-        for (const testCase of problem.testCases) {
+        for (const testCase of activeCodingProblem.testCases) {
             const result = await createSubmission(language, code, testCase.input, testCase.output);
             const passed = result.status === 'Accepted';
             
@@ -232,6 +364,25 @@ const TestBuddy: React.FC<TestBuddyProps> = ({ learnVaultContent, onNavigateToVa
             if (!passed) {
                 allPassed = false;
                 setOverallSubmissionStatus(result.status);
+                
+                const parsed = parseError(result.compile_output || result.stderr || '');
+                if (parsed) {
+                    setCodeError(parsed);
+                }
+
+                // If it's a "Wrong Answer", generate an explanation
+                if (result.status === 'Wrong Answer') {
+                    setIsExplanationLoading(true);
+                    generateFailureExplanation(activeCodingProblem, code, {
+                        input: testCase.input,
+                        expected: testCase.output,
+                        actual: result.stdout || ''
+                    }).then(explanation => {
+                        setFailureExplanation(explanation);
+                        setIsExplanationLoading(false);
+                    });
+                }
+
                 break; // Stop on first failure
             }
         }
@@ -240,7 +391,7 @@ const TestBuddy: React.FC<TestBuddyProps> = ({ learnVaultContent, onNavigateToVa
             setOverallSubmissionStatus('Accepted');
             setIsCodingTimerRunning(false);
             // Save to Firestore
-            await addTestResult(user.uid, problem.id, { language, testCases: resultsForFirestore });
+            await addTestResult(user.uid, activeCodingProblem.id, { language, testCases: resultsForFirestore });
             await updateUserOnSuccess(user.uid);
             onCodingSuccess();
         }
@@ -249,8 +400,7 @@ const TestBuddy: React.FC<TestBuddyProps> = ({ learnVaultContent, onNavigateToVa
     };
     
     const handleGetHint = async () => {
-        const problem = codingProblems[activeCodingProblemIndex];
-        if (!problem || isHintLoading || !submissionResults || submissionResults.length === 0) return;
+        if (!activeCodingProblem || isHintLoading || !submissionResults || submissionResults.length === 0) return;
         
         const failedTest = submissionResults.find(r => !r.passed);
         if (!failedTest) return;
@@ -258,7 +408,7 @@ const TestBuddy: React.FC<TestBuddyProps> = ({ learnVaultContent, onNavigateToVa
         setIsHintLoading(true);
         setHint('');
         try {
-            const hintText = await generateCodeHint(problem, code, {
+            const hintText = await generateCodeHint(activeCodingProblem, code, {
                 input: failedTest.input,
                 expected: failedTest.expected,
                 actual: failedTest.stdout || ''
@@ -278,8 +428,48 @@ const TestBuddy: React.FC<TestBuddyProps> = ({ learnVaultContent, onNavigateToVa
         setError(null);
     };
 
-    if (isLoading) {
-        return <div className="text-lg font-medium text-gray-700 dark:text-gray-300">Analyzing your LearnVault content...</div>;
+    // --- Resizable Panel Logic ---
+    const handleHorizontalDrag = useCallback((e: MouseEvent) => {
+        if (!isDraggingHorizontal.current || !workspaceRef.current) return;
+        const rect = workspaceRef.current.getBoundingClientRect();
+        const percentage = ((e.clientX - rect.left) / rect.width) * 100;
+        setHorizontalSplit(Math.max(20, Math.min(80, percentage)));
+    }, []);
+
+    const handleVerticalDrag = useCallback((e: MouseEvent) => {
+        if (!isDraggingVertical.current || !rightPanelRef.current) return;
+        const rect = rightPanelRef.current.getBoundingClientRect();
+        const percentage = ((e.clientY - rect.top) / rect.height) * 100;
+        setVerticalSplit(Math.max(20, Math.min(80, percentage)));
+    }, []);
+
+    const handleMouseUp = useCallback(() => {
+        isDraggingHorizontal.current = false;
+        isDraggingVertical.current = false;
+        window.removeEventListener('mousemove', handleHorizontalDrag);
+        window.removeEventListener('mousemove', handleVerticalDrag);
+        window.removeEventListener('mouseup', handleMouseUp);
+        document.body.style.userSelect = '';
+    }, [handleHorizontalDrag, handleVerticalDrag]);
+
+    const onHorizontalMouseDown = useCallback((e: React.MouseEvent) => {
+        e.preventDefault();
+        isDraggingHorizontal.current = true;
+        document.body.style.userSelect = 'none';
+        window.addEventListener('mousemove', handleHorizontalDrag);
+        window.addEventListener('mouseup', handleMouseUp, { once: true });
+    }, [handleHorizontalDrag, handleMouseUp]);
+
+    const onVerticalMouseDown = useCallback((e: React.MouseEvent) => {
+        e.preventDefault();
+        isDraggingVertical.current = true;
+        document.body.style.userSelect = 'none';
+        window.addEventListener('mousemove', handleVerticalDrag);
+        window.addEventListener('mouseup', handleMouseUp, { once: true });
+    }, [handleVerticalDrag, handleMouseUp]);
+
+    if (isLoading && view === 'initial') {
+        return <ModuleLoadingIndicator text="Analyzing your LearnVault content..." />;
     }
     
     if (!learnVaultContent.trim()) {
@@ -295,24 +485,28 @@ const TestBuddy: React.FC<TestBuddyProps> = ({ learnVaultContent, onNavigateToVa
     
     const renderInitial = () => (
         <div className="w-full max-w-2xl mx-auto text-center p-4">
-            <div className="flex justify-center items-center gap-3 mb-4">
-                <FlaskConicalIcon className="h-10 w-10 text-blue-500" />
-                <h1 className="text-3xl font-bold text-gray-800 dark:text-white">TestBuddy</h1>
-            </div>
-            <p className="text-gray-600 dark:text-gray-400 mb-8">Choose a test type to challenge your knowledge.</p>
-            <div className="flex flex-col sm:flex-row justify-center gap-4">
-                <button onClick={handleStartMcq} disabled={isLoading} className="flex items-center justify-center gap-2 px-6 py-4 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg font-semibold hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors">
-                    <PencilRulerIcon className="h-6 w-6 text-blue-500"/>
-                    MCQ Test
-                </button>
-                {isTopicProgramming && (
-                    <button onClick={() => setView('coding_difficulty')} className="flex items-center justify-center gap-2 px-6 py-4 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg font-semibold hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors">
-                        <CodeIcon className="h-6 w-6 text-purple-500"/>
-                        Coding Challenge
+            {isLoading ? <ModuleLoadingIndicator text="Preparing your test..." /> : (
+            <>
+                <div className="flex justify-center items-center gap-3 mb-4">
+                    <FlaskConicalIcon className="h-10 w-10 text-blue-500" />
+                    <h1 className="text-3xl font-bold text-gray-800 dark:text-white">TestBuddy</h1>
+                </div>
+                <p className="text-gray-600 dark:text-gray-400 mb-8">Choose a test type to challenge your knowledge.</p>
+                <div className="flex flex-col sm:flex-row justify-center gap-4">
+                    <button onClick={handleStartMcq} disabled={isLoading} className="flex items-center justify-center gap-2 px-6 py-4 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg font-semibold hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors">
+                        <PencilRulerIcon className="h-6 w-6 text-blue-500"/>
+                        MCQ Test
                     </button>
-                )}
-            </div>
-            {error && <p className="mt-4 text-red-500">{error}</p>}
+                    {isTopicProgramming && (
+                        <button onClick={() => setView('coding_difficulty')} className="flex items-center justify-center gap-2 px-6 py-4 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg font-semibold hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors">
+                            <CodeIcon className="h-6 w-6 text-purple-500"/>
+                            Coding Challenge
+                        </button>
+                    )}
+                </div>
+                {error && <p className="mt-4 text-red-500">{error}</p>}
+            </>
+            )}
         </div>
     );
     
@@ -363,26 +557,32 @@ const TestBuddy: React.FC<TestBuddyProps> = ({ learnVaultContent, onNavigateToVa
         );
     };
 
-    const renderCodingDifficulty = () => (
-         <div className="w-full max-w-4xl mx-auto text-center p-4">
-             <button onClick={() => setView('initial')} className="text-sm text-blue-500 hover:underline mb-4">&larr; Back to Test Selection</button>
-            <div className="flex justify-center items-center gap-3 mb-4">
-                <CodeIcon className="h-10 w-10 text-blue-500" />
-                <h1 className="text-3xl font-bold text-gray-800 dark:text-white">Coding Arena</h1>
+    const renderCodingDifficulty = () => {
+        if (isLoading) {
+            return <ModuleLoadingIndicator text={`Generating ${codingDifficulty} problem...`} />;
+        }
+        return (
+             <div className="w-full max-w-4xl mx-auto text-center p-4">
+                 <button onClick={() => setView('initial')} className="text-sm text-blue-500 hover:underline mb-4">&larr; Back to Test Selection</button>
+                <div className="flex justify-center items-center gap-3 mb-4">
+                    <CodeIcon className="h-10 w-10 text-blue-500" />
+                    <h1 className="text-3xl font-bold text-gray-800 dark:text-white">Coding Arena</h1>
+                </div>
+                 <p className="text-gray-600 dark:text-gray-400 mb-8">Select a difficulty to generate a coding problem.</p>
+                <div className="flex justify-center gap-4 mb-8">
+                    {(['Easy', 'Medium', 'Hard'] as CodingProblemDifficulty[]).map(d => 
+                        <DifficultyButton key={d} difficulty={d} onClick={() => handleFetchCodingProblem(d)} isLoading={isLoading && codingDifficulty === d} />
+                    )}
+                </div>
+                {error && <p className="mt-4 text-red-500">{error}</p>}
             </div>
-             <p className="text-gray-600 dark:text-gray-400 mb-8">Select a difficulty to generate coding problems.</p>
-            <div className="flex justify-center gap-4 mb-8">
-                {(['Easy', 'Medium', 'Hard'] as CodingProblemDifficulty[]).map(d => 
-                    <DifficultyButton key={d} difficulty={d} onClick={() => handleFetchCodingProblems(d)} isLoading={isLoading && codingDifficulty === d} />
-                )}
-            </div>
-            {error && <p className="mt-4 text-red-500">{error}</p>}
-        </div>
-    );
+        );
+    };
+
 
     const renderCodingWorkspace = () => {
-        if (codingProblems.length === 0) return null;
-        const problem = codingProblems[activeCodingProblemIndex];
+        if (!activeCodingProblem) return null;
+        const problem = activeCodingProblem;
         const difficultyColors: Record<CodingProblemDifficulty, string> = {
             Easy: 'text-green-600 dark:text-green-400', Medium: 'text-yellow-600 dark:text-yellow-400', Hard: 'text-red-600 dark:text-red-400',
         };
@@ -391,23 +591,14 @@ const TestBuddy: React.FC<TestBuddyProps> = ({ learnVaultContent, onNavigateToVa
             <div className="flex flex-col h-full w-full overflow-hidden">
                  {/* Header */}
                  <div className="flex-shrink-0 flex justify-between items-center p-2 border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800">
-                    <div className="flex items-center gap-2">
-                        <button onClick={() => setView('coding_difficulty')} className="text-sm text-blue-500 hover:underline">&larr; Back</button>
-                        <div className="flex gap-1">
-                            {codingProblems.map((p, index) => (
-                                <button key={p.id} onClick={() => setActiveCodingProblemIndex(index)} className={`px-3 py-1 text-sm rounded-md ${activeCodingProblemIndex === index ? 'bg-blue-500 text-white' : 'bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600'}`}>
-                                    {`Q${index + 1}`}
-                                </button>
-                            ))}
-                        </div>
-                    </div>
+                    <button onClick={() => setView('coding_difficulty')} className="text-sm text-blue-500 hover:underline">&larr; Back to Difficulty Selection</button>
                     <Timer initialMinutes={25} onTimeout={handleSubmitCode} isRunning={isCodingTimerRunning} />
                 </div>
 
-                <div className="flex-grow flex gap-4 overflow-hidden p-4">
+                <div ref={workspaceRef} className="flex-grow flex overflow-hidden p-4 gap-2">
                     {/* Left Panel */}
-                    <div className="w-1/2 flex flex-col bg-white dark:bg-gray-800 rounded-lg shadow overflow-hidden">
-                        <div className="p-4 border-b border-gray-200 dark:border-gray-700">
+                    <div className="flex flex-col bg-white dark:bg-gray-800 rounded-lg shadow overflow-hidden" style={{ width: `calc(${horizontalSplit}% - 4px)`}}>
+                        <div className="p-4 border-b border-gray-200 dark:border-gray-700 flex-shrink-0">
                             <h2 className="text-2xl font-bold">{problem.title}</h2>
                             <p className={`font-semibold ${difficultyColors[problem.difficulty]}`}>{problem.difficulty}</p>
                         </div>
@@ -417,18 +608,29 @@ const TestBuddy: React.FC<TestBuddyProps> = ({ learnVaultContent, onNavigateToVa
                                 <div key={i} className="bg-gray-50 dark:bg-gray-900/50 p-3 rounded-lg"><p className="font-semibold">Example {i + 1}:</p><pre className="mt-1 p-2 bg-gray-200 dark:bg-gray-700 rounded text-sm"><code><span className="font-bold">Input:</span> {ex.input}<br/><span className="font-bold">Output:</span> {ex.output}</code></pre>{ex.explanation && <p className="text-sm mt-1"><strong>Explanation:</strong> {ex.explanation}</p>}</div>
                             ))}
                             <div><h4 className="font-bold">Constraints:</h4><ul className="list-disc list-inside text-sm">{problem.constraints.map((c, i) => <li key={i}>{c}</li>)}</ul></div>
+                             <div className="mt-4 pt-4 border-t border-gray-200 dark:border-gray-700">
+                                <button onClick={() => setShowSolution(!showSolution)} className="font-semibold text-blue-500 hover:text-blue-600 dark:hover:text-blue-400">
+                                    {showSolution ? 'Hide Solution' : 'Show Solution'}
+                                </button>
+                                {showSolution && <SolutionViewer code={problem.solution[language]} language={language} />}
+                            </div>
                         </div>
                     </div>
 
+                    <DraggableDivider onMouseDown={onHorizontalMouseDown} direction="horizontal" />
+
                     {/* Right Panel */}
-                    <div className="w-1/2 flex flex-col gap-4">
-                        <div className="flex-grow flex flex-col bg-gray-800 rounded-lg shadow overflow-hidden">
+                    <div ref={rightPanelRef} className="flex flex-col" style={{ width: `calc(${100 - horizontalSplit}% - 4px)`}}>
+                        <div className="flex-grow flex flex-col bg-gray-800 rounded-lg shadow overflow-hidden" style={{ height: `calc(${verticalSplit}% - 4px)`}}>
                             <div className="p-2 bg-gray-700 flex items-center"><select value={language} onChange={e => setLanguage(e.target.value as Language)} className="bg-gray-800 text-white rounded px-2 py-1 text-sm border-none focus:ring-2 focus:ring-blue-500"><option value="javascript">JavaScript</option><option value="python">Python</option><option value="java">Java</option><option value="c">C</option></select></div>
-                            <div className="flex-grow relative"><CodeEditor language={language} value={code} onChange={setCode} /></div>
+                            <div className="flex-grow relative"><CodeEditor language={language} value={code} onChange={setCode} error={codeError} /></div>
                         </div>
-                         <div className="flex-shrink-0 h-48 bg-white dark:bg-gray-800 rounded-lg shadow p-2 flex flex-col">
+                        
+                        <DraggableDivider onMouseDown={onVerticalMouseDown} direction="vertical" />
+
+                        <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-2 flex flex-col" style={{ height: `calc(${100 - verticalSplit}% - 4px)`}}>
                             {/* Result Tabs */}
-                            <div className="flex border-b border-gray-200 dark:border-gray-700">
+                            <div className="flex border-b border-gray-200 dark:border-gray-700 flex-shrink-0">
                                 <button onClick={() => setActiveResultTab('run')} className={`px-4 py-2 text-sm font-semibold ${activeResultTab === 'run' ? 'text-blue-500 border-b-2 border-blue-500' : 'text-gray-500'}`}>Run Results</button>
                                 <button onClick={() => setActiveResultTab('submit')} className={`px-4 py-2 text-sm font-semibold ${activeResultTab === 'submit' ? 'text-blue-500 border-b-2 border-blue-500' : 'text-gray-500'}`}>Submission</button>
                             </div>
@@ -454,15 +656,32 @@ const TestBuddy: React.FC<TestBuddyProps> = ({ learnVaultContent, onNavigateToVa
                                 {activeResultTab === 'submit' && (
                                     overallSubmissionStatus ? (
                                         <div>
-                                            <ResultBadge status={overallSubmissionStatus} />
-                                             <div className="mt-2 grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
-                                                {submissionResults?.map((res, i) => (
-                                                    <div key={i} className={`flex items-center gap-2 p-2 rounded-md text-sm font-medium ${res.passed ? 'bg-green-100 dark:bg-green-900/50 text-green-800 dark:text-green-300' : 'bg-red-100 dark:bg-red-900/50 text-red-800 dark:text-red-300'}`}>
-                                                        {res.passed ? <CheckIcon className="h-4 w-4"/> : <XCircleIcon className="h-4 w-4"/>}
-                                                        Test #{i+1}
+                                            {overallSubmissionStatus === 'Running' ? (
+                                                <div className="flex items-center gap-2 text-gray-500 dark:text-gray-400 p-2">
+                                                    <InlineLoadingIndicator />
+                                                    <span>Running submission...</span>
+                                                </div>
+                                            ) : (
+                                                <>
+                                                    <ResultBadge status={overallSubmissionStatus} />
+                                                    {overallSubmissionStatus === 'Accepted' && (
+                                                        <div className="mt-4 flex flex-col sm:flex-row gap-4 items-center">
+                                                            <p className="font-semibold text-green-600 dark:text-green-400">Great job! All test cases passed. 🚀</p>
+                                                            <button onClick={() => handleFetchCodingProblem(codingDifficulty!)} className="flex items-center gap-2 px-4 py-2 bg-blue-500 text-white font-semibold rounded-lg shadow-md hover:bg-blue-600 transition-colors">
+                                                                Next Question <ArrowRightIcon className="h-5 w-5"/>
+                                                            </button>
+                                                        </div>
+                                                    )}
+                                                    <div className="mt-2 grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
+                                                        {submissionResults?.map((res, i) => (
+                                                            <div key={i} className={`flex items-center gap-2 p-2 rounded-md text-sm font-medium ${res.passed ? 'bg-green-100 dark:bg-green-900/50 text-green-800 dark:text-green-300' : 'bg-red-100 dark:bg-red-900/50 text-red-800 dark:text-red-300'}`}>
+                                                                {res.passed ? <CheckIcon className="h-4 w-4"/> : <XCircleIcon className="h-4 w-4"/>}
+                                                                Test #{i+1}
+                                                            </div>
+                                                        ))}
                                                     </div>
-                                                ))}
-                                            </div>
+                                                </>
+                                            )}
                                             {overallSubmissionStatus !== 'Accepted' && overallSubmissionStatus !== 'Running' && (
                                                 <div className="mt-4">
                                                     {(() => {
@@ -488,12 +707,20 @@ const TestBuddy: React.FC<TestBuddyProps> = ({ learnVaultContent, onNavigateToVa
                                                                             <pre className={`p-2 rounded whitespace-pre-wrap ${failedTest.stderr ? 'bg-red-100 dark:bg-red-900/50 text-red-800 dark:text-red-200' : 'bg-gray-200 dark:bg-gray-700'}`}><code>{failedTest.stdout || failedTest.stderr || 'No output'}</code></pre>
                                                                         </div>
                                                                     </div>
+                                                                     {isExplanationLoading ? (
+                                                                        <div className="mt-2 flex items-center gap-2 text-gray-500 dark:text-gray-400"><InlineLoadingIndicator /> <span>Analyzing failure...</span></div>
+                                                                    ) : failureExplanation && (
+                                                                        <div className="mt-3 pt-3 border-t border-gray-200 dark:border-gray-700">
+                                                                            <p className="font-sans font-semibold text-gray-800 dark:text-white">AI Debugger:</p>
+                                                                            <p className="font-sans text-gray-600 dark:text-gray-300 italic">"{failureExplanation}"</p>
+                                                                        </div>
+                                                                    )}
                                                                 </div>
 
                                                                 <div className="mt-2 text-sm">
                                                                     <button onClick={handleGetHint} disabled={isHintLoading} className="mt-2 flex items-center gap-1.5 px-3 py-1.5 text-sm font-semibold text-white bg-blue-500 rounded-lg hover:bg-blue-600 disabled:opacity-50">
                                                                         <SparklesIcon className="h-4 w-4" />
-                                                                        {isHintLoading ? 'Thinking...' : 'Get a Hint'}
+                                                                        {isHintLoading ? <InlineLoadingIndicator /> : 'Get a Hint'}
                                                                     </button>
                                                                     {hint && (
                                                                         <div className="mt-2 p-2 bg-gray-100 dark:bg-gray-700/50 rounded-lg italic text-gray-700 dark:text-gray-300">
@@ -516,8 +743,8 @@ const TestBuddy: React.FC<TestBuddyProps> = ({ learnVaultContent, onNavigateToVa
 
                 {/* Footer */}
                 <div className="flex-shrink-0 flex justify-end gap-4 p-2 border-t border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800">
-                    <button onClick={handleRunCode} disabled={isExecuting} className="flex items-center gap-2 px-4 py-2 bg-gray-200 dark:bg-gray-700 font-semibold rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600 disabled:opacity-50"><PlayIcon className="h-5 w-5"/> Run Code</button>
-                    <button onClick={handleSubmitCode} disabled={isExecuting} className="flex items-center gap-2 px-4 py-2 bg-green-500 text-white font-semibold rounded-lg hover:bg-green-600 disabled:opacity-50"><SendHorizonalIcon className="h-5 w-5"/> Submit Code</button>
+                    <button onClick={handleRunCode} disabled={isExecuting} className="flex items-center justify-center gap-2 px-4 py-2 w-32 bg-gray-200 dark:bg-gray-700 font-semibold rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600 disabled:opacity-50"><PlayIcon className="h-5 w-5"/> {isExecuting ? <InlineLoadingIndicator /> : 'Run Code'}</button>
+                    <button onClick={handleSubmitCode} disabled={isExecuting} className="flex items-center justify-center gap-2 px-4 py-2 w-36 bg-green-500 text-white font-semibold rounded-lg hover:bg-green-600 disabled:opacity-50"><SendHorizonalIcon className="h-5 w-5"/> {isExecuting ? <InlineLoadingIndicator /> : 'Submit Code'}</button>
                 </div>
             </div>
         );

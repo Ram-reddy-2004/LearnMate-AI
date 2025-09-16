@@ -8,6 +8,7 @@ interface CodeEditorProps {
     language: Language;
     value: string;
     onChange: (value: string) => void;
+    error?: { lineNumber: number; message: string; } | null;
 }
 
 // Debounce helper function to prevent rapid-fire resize calls
@@ -21,7 +22,7 @@ function debounce(func: (...args: any[]) => void, delay: number) {
     };
 }
 
-const CodeEditor: React.FC<CodeEditorProps> = ({ language, value, onChange }) => {
+const CodeEditor: React.FC<CodeEditorProps> = ({ language, value, onChange, error }) => {
     const editorRef = useRef<HTMLDivElement>(null);
     const monacoInstanceRef = useRef<any>(null);
     const onDidChangeContentRef = useRef<any>(null);
@@ -96,6 +97,26 @@ const CodeEditor: React.FC<CodeEditorProps> = ({ language, value, onChange }) =>
             });
         }
     }, [value, onChange]);
+
+    // Effect to handle displaying errors in the editor
+    useEffect(() => {
+        if (monacoInstanceRef.current && window.monaco) {
+            const model = monacoInstanceRef.current.getModel();
+            if (model && error) {
+                window.monaco.editor.setModelMarkers(model, 'owner', [{
+                    startLineNumber: error.lineNumber,
+                    startColumn: 1,
+                    endLineNumber: error.lineNumber,
+                    endColumn: model.getLineMaxColumn(error.lineNumber),
+                    message: error.message,
+                    severity: window.monaco.MarkerSeverity.Error
+                }]);
+            } else if (model) {
+                // Clear errors if the error prop is null or undefined
+                window.monaco.editor.setModelMarkers(model, 'owner', []);
+            }
+        }
+    }, [error]);
 
 
     return <div ref={editorRef} className="absolute inset-0" />;

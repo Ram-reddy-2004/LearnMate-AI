@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 // Fix: Remove v9 imports.
 // Fix: Import v8-compatible instances and the firebase namespace.
 import { auth, db, firebase } from '../services/firebaseConfig';
-import { BookOpenIcon } from './Icons';
+import { BookOpenIcon, EyeIcon, EyeOffIcon } from './Icons';
 
 export const AuthPage: React.FC = () => {
     const [isSignUp, setIsSignUp] = useState(false);
@@ -13,6 +13,7 @@ export const AuthPage: React.FC = () => {
     const [error, setError] = useState<string | null>(null);
     const [isLoading, setIsLoading] = useState(false);
     const [successMessage, setSuccessMessage] = useState<string | null>(null);
+    const [isPasswordVisible, setIsPasswordVisible] = useState(false);
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -119,15 +120,25 @@ export const AuthPage: React.FC = () => {
                         required
                         className="w-full px-4 py-2 text-gray-800 bg-gray-50 dark:bg-gray-700 dark:text-gray-200 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                     />
-                    <input
-                        type="password"
-                        placeholder="Password"
-                        value={password}
-                        onChange={(e) => setPassword(e.target.value)}
-                        required
-                        minLength={6}
-                        className="w-full px-4 py-2 text-gray-800 bg-gray-50 dark:bg-gray-700 dark:text-gray-200 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    />
+                    <div className="relative w-full">
+                        <input
+                            type={isPasswordVisible ? 'text' : 'password'}
+                            placeholder="Password"
+                            value={password}
+                            onChange={(e) => setPassword(e.target.value)}
+                            required
+                            minLength={6}
+                            className="w-full px-4 py-2 pr-10 text-gray-800 bg-gray-50 dark:bg-gray-700 dark:text-gray-200 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                        <button
+                            type="button"
+                            onClick={() => setIsPasswordVisible(!isPasswordVisible)}
+                            className="absolute inset-y-0 right-0 flex items-center px-3 text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+                            aria-label={isPasswordVisible ? 'Hide password' : 'Show password'}
+                        >
+                            {isPasswordVisible ? <EyeOffIcon className="h-5 w-5" /> : <EyeIcon className="h-5 w-5" />}
+                        </button>
+                    </div>
                     
                     {error && <p className="text-red-500 text-sm text-center pt-2">❌ {error}</p>}
                     {successMessage && <p className="text-green-500 text-sm text-center pt-2">{successMessage}</p>}

@@ -1,58 +1,120 @@
+import { GoogleGenAI, Type } from "@google/genai";
 import { Language, SubmissionResult } from '../types';
 
-// MOCK IMPLEMENTATION of a code execution service like Judge0.
-// This allows the UI to be fully functional without needing real API keys.
+if (!process.env.API_KEY) {
+  throw new Error("API_KEY environment variable is not set.");
+}
 
-const mockJudge0Response = (sourceCode: string, stdin?: string, expectedOutput?: string): SubmissionResult => {
-    // Simulate different outcomes based on simple checks in the source code
-    if (sourceCode.includes("syntax error")) {
-        return { status: 'Compilation Error', compile_output: 'SyntaxError: Invalid token on line 3' };
-    }
-    if (sourceCode.includes("throw new Error") || sourceCode.includes("error")) {
-        return { status: 'Runtime Error', stderr: 'Error: Something went wrong on line 5.' };
-    }
-    if (sourceCode.includes("while (true)") || sourceCode.includes("infinite loop")) {
-        return { status: 'Time Limit Exceeded', time: "2.01" };
-    }
+const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
-    // Mock a simple "add two numbers" problem logic for demonstration
-    try {
-        // This is a very simplified parser for the mock.
-        // It assumes inputs are numbers separated by spaces or newlines.
-        const inputs = stdin?.split(/\s+/).filter(Boolean).map(Number) || [1, 2];
-        
-        // This simulates a correct solution for a problem that adds all input numbers.
-        const correctSum = inputs.reduce((a, b) => a + b, 0);
-
-        let actualOutput;
-        // Mock simple student solutions
-        if (sourceCode.includes("return a + b")) { // Correct for two numbers
-             actualOutput = (inputs[0] + inputs[1]).toString();
-        } else if (sourceCode.includes("reduce")) { // Correct for multiple numbers
-            actualOutput = correctSum.toString();
-        } else { // Mock an incorrect solution
-             actualOutput = "0";
-        }
-        
-        if (expectedOutput && actualOutput.trim() !== expectedOutput.trim()) {
-            return { status: 'Wrong Answer', stdout: actualOutput, expectedOutput: expectedOutput, time: "0.05", memory: 15200 };
-        }
-        return { status: 'Accepted', stdout: actualOutput, time: "0.02", memory: 12000 };
-    } catch (e) {
-        return { status: 'Runtime Error', stderr: 'Could not parse input.' };
-    }
+const judgeResultSchema = {
+    type: Type.OBJECT,
+    properties: {
+        status: { 
+            type: Type.STRING,
+            enum: ['Accepted', 'Wrong Answer', 'Runtime Error', 'Time Limit Exceeded', 'Compilation Error'],
+            description: "The result of the code execution."
+        },
+        stdout: { 
+            type: Type.STRING,
+            description: "The standard output from the code. Can be an empty string.",
+        },
+        stderr: { 
+            type: Type.STRING,
+            description: "The standard error from the code, if any. Can be an empty string.",
+        },
+        compile_output: { 
+            type: Type.STRING,
+            description: "The compilation error, if any. Can be an empty string.",
+        },
+    },
+    required: ["status"]
 };
+
 
 /**
  * Creates a code submission and returns the result.
- * This is a MOCK function that simulates an API call to a code execution engine.
+ * This function uses the Gemini API to act as a code execution engine.
  */
 export const createSubmission = async (language: Language, sourceCode: string, stdin?: string, expectedOutput?: string): Promise<SubmissionResult> => {
-    console.log(`MOCKING code execution for ${language}`);
+    console.log(`AI Judge executing code for ${language}`);
     
-    // Simulate network delay for the API call
-    await new Promise(resolve => setTimeout(resolve, 1500));
-    
-    // Return a mocked result based on the code and inputs
-    return mockJudge0Response(sourceCode, stdin, expectedOutput);
+    const prompt = `
+You are a meticulous and accurate code judge. Your task is to analyze and "execute" the given source code with the provided standard input (stdin) and determine the outcome by comparing its output to the expected output.
+
+**Language:** ${language}
+
+**Source Code:**
+\`\`\`${language}
+${sourceCode}
+\`\`\`
+
+**Stdin:**
+\`\`\`
+${stdin || '(No input)'}
+\`\`\`
+
+**Expected Output:**
+\`\`\`
+${expectedOutput || '(No expected output)'}
+\`\`\`
+
+Analyze the code for correctness and potential issues. Based on your analysis, respond with ONLY a JSON object matching the specified format. Do not include any extra text, explanations, or markdown formatting like \`\`\`json.
+
+**Analysis Steps:**
+1.  **Compilation Check:** Does the code have syntax errors? If so, the status is 'Compilation Error'.
+2.  **Runtime Check:** If it compiles, would it throw an error when run with the given stdin? If so, the status is 'Runtime Error'. Consider edge cases like division by zero, null pointers, etc.
+3.  **Infinite Loop Check:** Does the code contain logic that would lead to an infinite loop? If so, the status is 'Time Limit Exceeded'.
+4.  **Output Check:** If the code runs successfully, what is its standard output (stdout)?
+    -   If the \`stdout\` exactly matches the \`Expected Output\`, the status is 'Accepted'.
+    -   If the \`stdout\` does not match the \`Expected Output\`, the status is 'Wrong Answer'.
+
+**Response Format:**
+Return a single JSON object with the following keys:
+- \`status\`: One of 'Accepted', 'Wrong Answer', 'Runtime Error', 'Time Limit Exceeded', 'Compilation Error'.
+- \`stdout\`: The captured standard output. Should be a string. Return an empty string if there's no output.
+- \`stderr\`: The captured standard error. Should be a string. Return an empty string if there's no error.
+- \`compile_output\`: The compilation error message. Should be a string. Return an empty string if there's no compilation error.
+`;
+
+    try {
+        const result = await ai.models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: prompt,
+            config: {
+                responseMimeType: "application/json",
+                responseSchema: judgeResultSchema,
+                temperature: 0.0, // Be deterministic
+                thinkingConfig: { thinkingBudget: 0 },
+            },
+        });
+        
+        const jsonString = result.text.trim();
+        const parsedResult = JSON.parse(jsonString);
+
+        // Fill in optional fields with empty strings if they are null/undefined
+        const finalResult: SubmissionResult = {
+            status: parsedResult.status,
+            stdout: parsedResult.stdout || '',
+            stderr: parsedResult.stderr || '',
+            compile_output: parsedResult.compile_output || '',
+            time: (Math.random() * 0.5 + 0.01).toFixed(3), // Simulate random execution time
+            memory: Math.floor(Math.random() * 10000 + 8000), // Simulate random memory usage
+        };
+        
+        // If the status is a wrong answer, Gemini might not provide the expected output. We add it back.
+        if (finalResult.status === 'Wrong Answer') {
+             finalResult.expectedOutput = expectedOutput;
+        }
+
+        return finalResult;
+
+    } catch (error) {
+        console.error("Error calling Gemini for code judging:", error);
+        // Return a generic error that the UI can handle
+        return {
+            status: 'Runtime Error',
+            stderr: 'The AI code judge failed to process the request. Please try again.'
+        };
+    }
 };

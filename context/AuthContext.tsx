@@ -7,38 +7,50 @@ interface AuthContextType {
   user: FirebaseUser | null;
   userData: UserData | null;
   isLoading: boolean;
+  isOffline: boolean;
 }
 
-const AuthContext = createContext<AuthContextType>({ user: null, userData: null, isLoading: true });
+const AuthContext = createContext<AuthContextType>({ user: null, userData: null, isLoading: true, isOffline: false });
 
 export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [userData, setUserData] = useState<UserData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isOffline, setIsOffline] = useState(false);
 
   useEffect(() => {
+    let unsubscribeFromFirestore: (() => void) | null = null;
+
     // Fix: Use v8 namespaced method for auth state changes.
-    const unsubscribe = auth.onAuthStateChanged(async (currentUser) => {
+    const unsubscribeFromAuth = auth.onAuthStateChanged(async (currentUser) => {
       setUser(currentUser);
+      
+      // Clean up previous Firestore listener if user changes or logs out
+      if (unsubscribeFromFirestore) {
+        unsubscribeFromFirestore();
+        unsubscribeFromFirestore = null;
+      }
+
       if (currentUser) {
         setIsLoading(true);
-        try {
-            // Fix: Use v8 syntax for document reference and fetching.
-            const userDocRef = db.collection('users').doc(currentUser.uid);
-            const userDoc = await userDocRef.get();
-            if (userDoc.exists) {
-              const data = userDoc.data();
+        const userDocRef = db.collection('users').doc(currentUser.uid);
+        
+        // Use a real-time listener to get data and detect offline status
+        unsubscribeFromFirestore = userDocRef.onSnapshot(
+          (doc) => {
+            // Check if data is from cache, indicating offline mode
+            setIsOffline(doc.metadata.fromCache);
+
+            if (doc.exists) {
+              const data = doc.data();
               
-              // Helper to safely convert Firestore Timestamps to ISO strings
               const toISOString = (timestamp: any): string => {
                 if (timestamp && typeof timestamp.toDate === 'function') {
                   return timestamp.toDate().toISOString();
                 }
-                // Return as-is if it's already a string or another type
                 return timestamp; 
               };
 
-              // Sanitize all known timestamp fields to prevent circular structure errors
               const sanitizedData = {
                 ...data,
                 createdAt: toISOString(data.createdAt),
@@ -50,30 +62,42 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
               };
               
               setUserData({
-                uid: userDoc.id,
+                uid: doc.id,
                 ...sanitizedData,
               } as UserData);
 
             } else {
               setUserData(null);
             }
-        } catch (error) {
-            console.error("Failed to fetch user data:", error);
-            setUserData(null);
-        } finally {
             setIsLoading(false);
-        }
+          },
+          (error) => {
+            console.error("Error fetching user data with onSnapshot:", error);
+            if (error.code === 'unavailable') {
+                console.warn("Firestore backend is unavailable. Operating in offline mode.");
+                setIsOffline(true); // Explicitly set offline on connection error
+            }
+            setUserData(null);
+            setIsLoading(false);
+          }
+        );
       } else {
         setUserData(null);
         setIsLoading(false);
+        setIsOffline(false); // Reset offline status on logout
       }
     });
 
-    return () => unsubscribe();
+    return () => {
+        unsubscribeFromAuth();
+        if (unsubscribeFromFirestore) {
+            unsubscribeFromFirestore();
+        }
+    };
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, userData, isLoading }}>
+    <AuthContext.Provider value={{ user, userData, isLoading, isOffline }}>
       {children}
     </AuthContext.Provider>
   );
