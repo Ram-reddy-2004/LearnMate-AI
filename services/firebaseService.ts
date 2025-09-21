@@ -1,6 +1,7 @@
 // Fix: Import db and firebase instances from the v8-compatible config.
 import { db, firebase } from './firebaseConfig';
-import { type McqResult, type TestResultForFirestore } from '../types';
+// Fix: Removed unused 'UserProgress' and 'UserProfile' imports. 'UserProgress' is not an exported member of types.
+import { QuizResult, TestResult } from '../types';
 
 /**
  * Appends new content to the user's LearnVault in Firestore.
@@ -15,34 +16,25 @@ export const updateLearnVault = async (uid: string, newContent: string, existing
 };
 
 /**
- * Adds a new MCQ result to the user's history in Firestore.
+ * Saves a new quiz result to the `quizResults` sub-collection.
+ * The MyProgress component listens for changes to this collection in real-time.
  */
-export const addMcqResult = async (uid: string, result: McqResult): Promise<void> => {
-    // Fix: Use v8 syntax for document reference and array updates.
-    const userDocRef = db.collection('users').doc(uid);
-    await userDocRef.update({
-        mcqHistory: firebase.firestore.FieldValue.arrayUnion(result)
-    });
-};
-
-/**
- * Saves a detailed coding test result to a subcollection for that user.
- */
-export const addTestResult = async (uid: string, problemId: string, result: Omit<TestResultForFirestore, 'submittedAt'>): Promise<void> => {
-    const resultWithTimestamp: TestResultForFirestore = {
+export const saveQuizResult = async (uid: string, result: Omit<QuizResult, 'quizId' | 'attemptedAt'>): Promise<void> => {
+    const newQuizResult = {
         ...result,
-        submittedAt: firebase.firestore.FieldValue.serverTimestamp()
+        attemptedAt: firebase.firestore.FieldValue.serverTimestamp(),
     };
-    await db.collection('users').doc(uid).collection('testResults').doc(problemId).set(resultWithTimestamp);
+    await db.collection('users').doc(uid).collection('quizResults').add(newQuizResult);
 };
 
 /**
- * Updates the main user document's progress after a successful coding submission.
+ * Saves a new coding test result to the `codingResults` sub-collection.
+ * The MyProgress component listens for changes to this collection in real-time.
  */
-export const updateUserOnSuccess = async (uid: string): Promise<void> => {
-    const userDocRef = db.collection('users').doc(uid);
-    await userDocRef.update({
-        'progress.solvedProblems': firebase.firestore.FieldValue.increment(1),
-        lastActive: firebase.firestore.FieldValue.serverTimestamp()
-    });
+export const saveCodingResult = async (uid: string, result: Omit<TestResult, 'attemptedAt'>): Promise<void> => {
+    const newCodingResult = {
+        ...result,
+        attemptedAt: firebase.firestore.FieldValue.serverTimestamp()
+    };
+    await db.collection('users').doc(uid).collection('codingResults').add(newCodingResult);
 };

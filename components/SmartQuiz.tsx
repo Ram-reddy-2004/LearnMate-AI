@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { generateQuiz } from '../services/geminiService';
-import { type QuizQuestion, type QuizConfig } from '../types';
+import { type QuizQuestion, type QuizConfig, type QuizResult } from '../types';
 import { PencilRulerIcon, Volume2Icon, CheckCircleIcon, XCircleIcon, BrainCircuitIcon } from './Icons';
 import { ModuleLoadingIndicator } from './LoadingIndicators';
 
@@ -9,7 +9,7 @@ type QuizState = 'config' | 'loading' | 'active' | 'results';
 interface SmartQuizProps {
     learnVaultContent: string;
     onNavigateToVault: () => void;
-    onQuizComplete: (result: { score: number, total: number, topic: string }) => void;
+    onQuizComplete: (result: Omit<QuizResult, 'quizId' | 'attemptedAt'>) => void;
 }
 
 const ExplanationCard: React.FC<{ text: string }> = ({ text }) => {
@@ -114,17 +114,13 @@ const SmartQuiz: React.FC<SmartQuizProps> = ({ learnVaultContent, onNavigateToVa
     const [config, setConfig] = useState<QuizConfig>({ numQuestions: 5 });
     const [questions, setQuestions] = useState<QuizQuestion[]>([]);
     const [quizTopic, setQuizTopic] = useState<string>('');
+    const [quizDifficulty, setQuizDifficulty] = useState<'Easy' | 'Medium' | 'Hard'>('Easy');
     const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
     const [selectedAnswer, setSelectedAnswer] = useState<string | null>(null);
     const [isAnswerSubmitted, setIsAnswerSubmitted] = useState(false);
     const [score, setScore] = useState(0);
     const [error, setError] = useState<string | null>(null);
-
-    useEffect(() => {
-        if (quizState === 'results') {
-            onQuizComplete({ score, total: questions.length, topic: quizTopic });
-        }
-    }, [quizState, score, questions.length, onQuizComplete, quizTopic]);
+    const [startTime, setStartTime] = useState<Date | null>(null);
 
     const handleGenerateQuiz = async () => {
         if (!learnVaultContent.trim()) {
@@ -134,13 +130,15 @@ const SmartQuiz: React.FC<SmartQuizProps> = ({ learnVaultContent, onNavigateToVa
         setError(null);
         setQuizState('loading');
         try {
-            const { questions: generatedQuestions, topic: generatedTopic } = await generateQuiz(learnVaultContent, config);
+            const { questions: generatedQuestions, topic: generatedTopic, difficulty: generatedDifficulty } = await generateQuiz(learnVaultContent, config);
             if (generatedQuestions.length === 0) {
                  throw new Error("The AI could not generate a quiz from the provided text. Please try with different content.");
             }
             setQuestions(generatedQuestions);
             setQuizTopic(generatedTopic);
+            setQuizDifficulty(generatedDifficulty);
             setQuizState('active');
+            setStartTime(new Date());
         } catch (err) {
             const errorMessage = err instanceof Error ? err.message : 'An unknown error occurred.';
             setError(errorMessage);
@@ -169,6 +167,24 @@ const SmartQuiz: React.FC<SmartQuizProps> = ({ learnVaultContent, onNavigateToVa
             setSelectedAnswer(null);
             setIsAnswerSubmitted(false);
         } else {
+            const endTime = new Date();
+            const timeDiff = endTime.getTime() - (startTime?.getTime() || endTime.getTime());
+            const minutes = Math.floor(timeDiff / 60000);
+            const seconds = Math.floor((timeDiff % 60000) / 1000);
+            const timeTaken = `${minutes}m ${seconds}s`;
+
+            const finalScore = score + (selectedAnswer === questions[currentQuestionIndex].correctAnswer ? 1 : 0) - (selectedAnswer !== null ? 0 : score);
+
+            const result = {
+                title: quizTopic,
+                difficulty: quizDifficulty,
+                questions: questions.length,
+                correctAnswers: finalScore,
+                wrongAnswers: questions.length - finalScore,
+                score: parseFloat(((finalScore / questions.length) * 100).toFixed(2)),
+                timeTaken: timeTaken,
+            };
+            onQuizComplete(result);
             setQuizState('results');
         }
     };
@@ -182,6 +198,7 @@ const SmartQuiz: React.FC<SmartQuizProps> = ({ learnVaultContent, onNavigateToVa
         setScore(0);
         setError(null);
         setQuizTopic('');
+        setStartTime(null);
     };
 
     const renderConfigScreen = () => (

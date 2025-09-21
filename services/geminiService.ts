@@ -1,12 +1,25 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { fileToBase64 } from "../utils/fileUtils";
-import type { QuizQuestion, QuizConfig, SkillPathResponse, Concept, CodingProblem, CodingProblemDifficulty } from "../types";
+import type { QuizQuestion, QuizConfig, SkillPathResponse, Concept, CodingProblem, CodingProblemDifficulty, Language, SubmissionResult } from "../types";
 
 if (!process.env.API_KEY) {
   throw new Error("API_KEY environment variable is not set.");
 }
 
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+
+/**
+ * Truncates text to a maximum length, taking the end of the string.
+ * This is useful for providing recent context to AI models without exceeding token limits.
+ */
+const truncateText = (text: string, maxLength: number = 15000): string => {
+  if (text.length <= maxLength) {
+    return text;
+  }
+  // Return the last `maxLength` characters, which is often the most relevant context.
+  return text.slice(-maxLength);
+};
+
 
 interface Part {
   text?: string;
@@ -133,6 +146,11 @@ const quizSchema = {
         type: Type.STRING,
         description: "A short, descriptive title for the overall topic of this quiz, derived from the source text. For example: 'JavaScript Fundamentals', 'World War II History', 'Cell Biology'."
       },
+      difficulty: {
+        type: Type.STRING,
+        enum: ["Easy", "Medium", "Hard"],
+        description: "The difficulty level of the quiz."
+      },
       questions: {
         type: Type.ARRAY,
         description: "An array of quiz questions.",
@@ -161,18 +179,19 @@ const quizSchema = {
         }
       }
     },
-    required: ["topic", "questions"]
+    required: ["topic", "difficulty", "questions"]
   };
 
 /**
  * For SmartQuiz: Generates a quiz from source text using a JSON schema.
  */
-export const generateQuiz = async (sourceText: string, config: QuizConfig): Promise<{ topic: string, questions: QuizQuestion[] }> => {
+export const generateQuiz = async (sourceText: string, config: QuizConfig): Promise<{ topic: string, difficulty: 'Easy' | 'Medium' | 'Hard', questions: QuizQuestion[] }> => {
+    const truncatedText = truncateText(sourceText);
     const prompt = `Based on the following text, generate a multiple-choice quiz with ${config.numQuestions} questions. First, identify the main topic of the text and provide it. Then, for each question, provide four distinct options, identify the correct answer, and write a brief explanation for why that answer is correct.
 
     Text:
     ---
-    ${sourceText}
+    ${truncatedText}
     ---
     `;
 
@@ -194,11 +213,14 @@ export const generateQuiz = async (sourceText: string, config: QuizConfig): Prom
             throw new Error("AI response did not contain a valid 'topic' and 'questions' array.");
         }
         
-        return parsedResult as { topic: string, questions: QuizQuestion[] };
+        return parsedResult as { topic: string, difficulty: 'Easy' | 'Medium' | 'Hard', questions: QuizQuestion[] };
 
     } catch (error) {
         console.error("Error generating quiz:", error);
         if (error instanceof Error) {
+            if (error.message.toLowerCase().includes('xhr error') || error.message.toLowerCase().includes('failed to fetch')) {
+                 throw new Error("A network error occurred while contacting the AI. Please check your internet connection and try again.");
+            }
             throw new Error(`AI quiz generation failed: ${error.message}`);
         }
         throw new Error("An unknown error occurred during quiz generation.");
@@ -269,6 +291,7 @@ const singleCodingProblemSchema = {
  * For TestBuddy: Generates a single coding problem based on source text and difficulty.
  */
 export const generateCodingProblem = async (sourceText: string, difficulty: CodingProblemDifficulty): Promise<CodingProblem> => {
+    const truncatedText = truncateText(sourceText);
     const prompt = `Based on the following knowledge base about programming concepts, generate ONE new coding problem of '${difficulty}' difficulty.
 The problem must be a complete LeetCode-style definition.
 - The 'input' for test cases must be formatted with newlines separating arguments for easy parsing.
@@ -276,7 +299,7 @@ The problem must be a complete LeetCode-style definition.
 
     Knowledge Base:
     ---
-    ${sourceText}
+    ${truncatedText}
     ---
     `;
 
@@ -387,11 +410,12 @@ export const generateFailureExplanation = async (problem: CodingProblem, userCod
  * For TestBuddy: Determines if a knowledge base is programming-related.
  */
 export const isProgrammingTopic = async (sourceText: string): Promise<boolean> => {
+    const truncatedText = truncateText(sourceText, 8000);
     const prompt = `Analyze the following text and determine if its primary subject is related to computer programming, software development, algorithms, or data structures. Respond with only a JSON object containing a single boolean key "isProgrammingTopic".
 
     Text:
     ---
-    ${sourceText.substring(0, 4000)}
+    ${truncatedText}
     ---
     `;
     try {
@@ -425,7 +449,7 @@ export const isProgrammingTopic = async (sourceText: string): Promise<boolean> =
  * For MyProgress: Generates motivational insights based on performance data.
  */
 export const generateProgressInsights = async (performanceSummary: string): Promise<string> => {
-    const prompt = `You are an encouraging AI learning coach. Based on the following student performance summary, provide a short, motivational, and insightful message (2-3 sentences). Highlight improvements and suggest a focus area. End with a positive emoji.
+    const prompt = `You are an encouraging AI learning coach. Based on the following student performance summary, provide a short, motivational, and insightful message (2-4 sentences). If specific quiz or test titles are available in the summary, mention them to make the feedback more personal. Highlight a specific strength and suggest a clear area for focus. End with a positive emoji.
 
     Summary:
     ---
@@ -445,6 +469,34 @@ export const generateProgressInsights = async (performanceSummary: string): Prom
         return "Keep up the great work! Consistent practice is key to success. ✨";
     }
 };
+
+/**
+ * For MyProgress: Analyzes performance data to find the weakest topic.
+ */
+export const determineWeakestTopic = async (performanceSummary: string): Promise<string> => {
+    const prompt = `Analyze the following user performance summary. The summary contains a list of quizzes taken with their titles and scores. Identify the single most prominent topic or concept where the user is weakest based on lower scores or repeated failures. Your response must be ONLY the name of that topic. Do not add any introductory text like "The weakest topic is". For example: 'JavaScript Arrays' or 'Data Structures Fundamentals'. If there's not enough data, return "General Knowledge".
+
+    Summary:
+    ---
+    ${performanceSummary}
+    ---
+    `;
+
+    try {
+        const result = await ai.models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: prompt,
+            config: {
+                thinkingConfig: { thinkingBudget: 0 },
+            }
+        });
+        return result.text.trim();
+    } catch (error) {
+        console.error("Error determining weakest topic:", error);
+        return "Topic Analysis"; // Fallback
+    }
+};
+
 
 const skillPathSchema = {
     type: Type.OBJECT,
@@ -568,6 +620,7 @@ const codingTutorPreamble = `You are an expert technical writer and teacher for 
  * For LearnGuide: Starts a session by identifying concepts and explaining the first one.
  */
 export const startLearnGuideSession = async (knowledgeBase: string): Promise<{ concepts: string[], firstConcept: Concept }> => {
+    const truncatedKb = truncateText(knowledgeBase);
     const prompt = `${codingTutorPreamble}Act as a teacher. Analyze the following knowledge base and break it down into a logical sequence of key learning concepts.
 1.  Provide a JSON array containing only the titles of all the concepts in the order they should be learned.
 2.  Provide a breakdown for the VERY FIRST concept in the sequence. This breakdown must include a short 'definition', a concise 'explanation' broken down into 3-5 clear bullet points, and 2-3 practical 'examples' or mini-scenarios.
@@ -575,7 +628,7 @@ export const startLearnGuideSession = async (knowledgeBase: string): Promise<{ c
 
 Knowledge Base:
 ---
-${knowledgeBase}
+${truncatedKb}
 ---
 `;
     try {
@@ -607,13 +660,14 @@ ${knowledgeBase}
  * For LearnGuide: Gets the explanation for a specific concept.
  */
 export const getConceptExplanation = async (knowledgeBase: string, conceptTitle: string, learnedConcepts: string[]): Promise<Concept> => {
+    const truncatedKb = truncateText(knowledgeBase);
     const prompt = `${codingTutorPreamble}I am teaching a student based on the following text. They have already understood these concepts: [${learnedConcepts.join(', ')}].
 Now, please provide a breakdown of the concept of "${conceptTitle}". This breakdown must include a short 'definition', a concise 'explanation' broken down into 3-5 clear bullet points, and 2-3 practical 'examples' or mini-scenarios.
 If the topic is programming-related (e.g., JavaScript, Python), ensure the 'explanation' and 'examples' include relevant code snippets. Each code snippet MUST be a separate item in its array, enclosed in markdown-style triple backticks. Do not include explanatory text within the same item as a code block.
 
 Full Text:
 ---
-${knowledgeBase}
+${truncatedKb}
 ---
 `;
     try {
@@ -686,5 +740,136 @@ ${codeSnippet}
     } catch (error) {
         console.error("Error explaining code snippet:", error);
         throw new Error("AI failed to explain the code snippet.");
+    }
+};
+
+const singleSubmissionResultSchema = {
+    type: Type.OBJECT,
+    properties: {
+        status: {
+            type: Type.STRING,
+            enum: ['Accepted', 'Wrong Answer', 'Runtime Error', 'Time Limit Exceeded', 'Compilation Error'],
+            description: "The evaluation status for this single test case."
+        },
+        stdout: {
+            type: Type.STRING,
+            description: "The standard output from the code execution. Should be an empty string if there's an error or no output."
+        },
+        stderr: {
+            type: Type.STRING,
+            description: "The standard error output. Empty string if no errors."
+        },
+        compile_output: {
+            type: Type.STRING,
+            description: "Output from the compilation phase. Empty string if compilation is successful."
+        },
+        time: {
+            type: Type.STRING,
+            description: "Simulated execution time in seconds, e.g., '0.05s'."
+        },
+        memory: {
+            type: Type.NUMBER,
+            description: "Simulated memory usage in KB."
+        }
+    },
+    required: ["status", "stdout", "stderr", "compile_output", "time", "memory"]
+};
+
+const batchSubmissionResultSchema = {
+    type: Type.OBJECT,
+    properties: {
+        results: {
+            type: Type.ARRAY,
+            description: "An array of results, one for each test case provided in the prompt.",
+            items: singleSubmissionResultSchema
+        }
+    },
+    required: ["results"]
+};
+
+
+/**
+ * For TestBuddy: Evaluates user code against test cases using an AI model.
+ */
+export const evaluateCodeWithAI = async (
+    language: Language,
+    sourceCode: string,
+    testCases: { stdin: string, expectedOutput?: string }[],
+    problem: CodingProblem
+): Promise<SubmissionResult[]> => {
+
+    const prompt = `
+You are an expert code evaluator and a sandboxed runtime environment. Your task is to create a test harness, compile, and run the user's code against a series of test cases.
+
+**Problem Description:**
+Title: ${problem.title}
+Description: ${problem.description}
+Starter Code Signature (for context): 
+\`\`\`${language}
+${problem.starterCode[language]}
+\`\`\`
+
+**User's Submitted Code (${language}):**
+\`\`\`${language}
+${sourceCode}
+\`\`\`
+
+**Test Cases:**
+You must evaluate the code against the following test cases. The 'stdin' represents the arguments to be passed to the solution function.
+${JSON.stringify(testCases, null, 2)}
+
+**Execution Instructions:**
+For each test case, you MUST perform the following steps:
+1.  **Create a Test Harness:** Write a complete, runnable program (e.g., a class with a \`public static void main(String[] args)\` method in Java, or a script with a main execution block in Python). This harness should wrap or call the user's submitted code.
+2.  **Inside the harness's main entry point:**
+    a. Parse the 'stdin' for the current test case to create the necessary input variables (e.g., arrays, integers, strings). The stdin format is one argument per line.
+    b. Instantiate any required classes (like a \`Solution\` class if provided by the user).
+    c. Call the user's primary solution function/method with the parsed input variables.
+    d. Capture the return value from the solution function.
+    e. Print the captured return value to standard output (\`stdout\`). The output format must exactly match the 'expectedOutput'. Do not print any extra text.
+3.  **Simulate Compilation & Execution:**
+    *   Simulate the compilation of the complete program (harness + user code). If it fails, report "Compilation Error" with the compiler message.
+    *   Simulate the execution. If it throws an unhandled exception, report "Runtime Error" with the error message.
+    *   Simulate a time limit of 2 seconds. If a test case would realistically take longer, set the status to "Time Limit Exceeded".
+4.  **Compare Output:**
+    *   If the program's final \`stdout\` exactly matches the test case's \`expectedOutput\`, the status is "Accepted".
+    *   Otherwise, the status is "Wrong Answer".
+5.  **Report Results:** Provide the results for each test case in a JSON array, conforming to the schema. Your entire response must be ONLY this JSON object.
+`;
+
+    try {
+        const result = await ai.models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: prompt,
+            config: {
+                responseMimeType: "application/json",
+                responseSchema: batchSubmissionResultSchema,
+                thinkingConfig: { thinkingBudget: 0 },
+            },
+        });
+
+        const jsonString = result.text.trim();
+        const parsedResult = JSON.parse(jsonString);
+
+        if (!parsedResult.results || !Array.isArray(parsedResult.results)) {
+            throw new Error("AI response did not contain a valid 'results' array.");
+        }
+        
+        return parsedResult.results.map((res: SubmissionResult, index: number) => ({
+            ...res,
+            expectedOutput: testCases[index].expectedOutput
+        }));
+
+    } catch (error) {
+        console.error("Error evaluating code with AI:", error);
+        const errorMessage = error instanceof Error ? `AI evaluation failed: ${error.message}` : "An unknown error occurred during AI code evaluation.";
+        return testCases.map(() => ({
+            status: 'Compilation Error',
+            stdout: '',
+            stderr: '',
+            compile_output: errorMessage,
+            time: '0',
+            memory: 0
+        } as SubmissionResult));
     }
 };

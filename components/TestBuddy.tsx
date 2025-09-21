@@ -1,10 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { isProgrammingTopic, generateQuiz, generateCodingProblem, generateCodeHint, generateFailureExplanation } from '../services/geminiService';
-import { createSubmission } from '../services/judge0Service';
-import { addMcqResult, addTestResult, updateUserOnSuccess } from '../services/firebaseService';
-// Fix: Import the SubmissionStatus type.
-import { type CodingProblem, type CodingProblemDifficulty, type Language, type SubmissionResult, type QuizQuestion, type TestCaseResult, type SubmissionStatus, TestCaseResultForFirestore } from '../types';
+import { isProgrammingTopic, generateQuiz, generateCodingProblem, generateCodeHint, generateFailureExplanation, evaluateCodeWithAI } from '../services/geminiService';
+import { type CodingProblem, type CodingProblemDifficulty, type Language, type SubmissionResult, type QuizQuestion, type TestCaseResult, type SubmissionStatus, type TestResult, type QuizResult } from '../types';
 import { BrainCircuitIcon, FlaskConicalIcon, CheckCircleIcon, XCircleIcon, ClockIcon, PlayIcon, SendHorizonalIcon, ArrowRightIcon, CodeIcon, PencilRulerIcon, LightbulbIcon, SparklesIcon, CheckIcon, ClipboardIcon } from './Icons';
 import { ModuleLoadingIndicator, InlineLoadingIndicator } from './LoadingIndicators';
 import CodeEditor from './CodeEditor';
@@ -16,15 +13,36 @@ type ActiveResultTab = 'run' | 'submit';
 // Helper to parse line numbers from common error formats
 const parseError = (errorMessage: string): { lineNumber: number; message: string } | null => {
     if (!errorMessage) return null;
-    // Common patterns: "line X", ":X:", "(X:Y)"
-    const match = errorMessage.match(/(?:line|:)(\s+)?(\d+)|[(\[](\d+):/);
+    
+    // Regex to find line numbers in various compiler error formats.
+    // Examples:
+    // - ERROR: [Line 5]: ';' expected
+    // - somefile.java:5: error: ';' expected
+    // - File "script.py", line 5, in <module>
+    // - /path/to/file.c:5:5: error: expected ';'
+    // - SyntaxError: Unexpected identifier (at script.js:5:1)
+    const match = errorMessage.match(/(?:[a-zA-Z0-9\/\._-]+):(\d+)|line (\d+)|\[Line (\d+)\]/i);
+
+    
     if (match) {
-        const lineNumber = parseInt(match[2] || match[3], 10);
-        // Clean up the message
-        const cleanedMessage = errorMessage.replace(/^(Error: |.*:\d+:\d+:)/, '').trim();
-        return { lineNumber, message: cleanedMessage };
+        const lineNumber = parseInt(match[1] || match[2] || match[3], 10);
+        return { lineNumber, message: errorMessage.trim() };
     }
-    return { lineNumber: 1, message: errorMessage }; // Default to line 1 if no number found
+    
+    // Fallback if no line number is found
+    return { lineNumber: 1, message: errorMessage.trim() };
+};
+
+// Helper to strip variable names from test case inputs like "nums = [1,2,3]"
+const extractInputValue = (input: string): string => {
+    // Split by newlines to handle multi-argument inputs
+    return input.split('\n').map(line => {
+        const eqIndex = line.indexOf('=');
+        if (eqIndex > -1) {
+            return line.substring(eqIndex + 1).trim();
+        }
+        return line.trim();
+    }).join('\n');
 };
 
 
@@ -166,11 +184,12 @@ const DraggableDivider: React.FC<{ onMouseDown: React.MouseEventHandler<HTMLDivE
 interface TestBuddyProps {
     learnVaultContent: string;
     onNavigateToVault: () => void;
-    onMcqComplete: (result: { score: number, total: number, topic: string }) => void;
-    onCodingSuccess: () => void;
+    // Fix: Changed onMcqComplete prop type to align with QuizResult for consistency.
+    onMcqComplete: (result: Omit<QuizResult, 'quizId' | 'attemptedAt'>) => void;
+    onCodingAttempt: (result: Omit<TestResult, 'attemptedAt'>) => void;
 }
 
-const TestBuddy: React.FC<TestBuddyProps> = ({ learnVaultContent, onNavigateToVault, onMcqComplete, onCodingSuccess }) => {
+const TestBuddy: React.FC<TestBuddyProps> = ({ learnVaultContent, onNavigateToVault, onMcqComplete, onCodingAttempt }) => {
     const { user } = useAuth();
     const [view, setView] = useState<TestBuddyView>('initial');
     const [isTopicProgramming, setIsTopicProgramming] = useState<boolean | null>(null);
@@ -180,10 +199,14 @@ const TestBuddy: React.FC<TestBuddyProps> = ({ learnVaultContent, onNavigateToVa
     // MCQ State
     const [mcqQuestions, setMcqQuestions] = useState<QuizQuestion[]>([]);
     const [mcqTopic, setMcqTopic] = useState('');
+    // Fix: Added state for MCQ difficulty to create a complete QuizResult.
+    const [mcqDifficulty, setMcqDifficulty] = useState<'Easy' | 'Medium' | 'Hard'>('Easy');
     const [currentMcqIndex, setCurrentMcqIndex] = useState(0);
     const [selectedAnswer, setSelectedAnswer] = useState<string | null>(null);
     const [userAnswers, setUserAnswers] = useState<Record<number, string>>({});
     const [isMcqTimerRunning, setIsMcqTimerRunning] = useState(false);
+    // Fix: Added state for MCQ start time to calculate time taken.
+    const [mcqStartTime, setMcqStartTime] = useState<Date | null>(null);
     
     // Coding State
     const [activeCodingProblem, setActiveCodingProblem] = useState<CodingProblem | null>(null);
@@ -242,14 +265,19 @@ const TestBuddy: React.FC<TestBuddyProps> = ({ learnVaultContent, onNavigateToVa
         setIsLoading(true);
         setError(null);
         try {
-            const { questions, topic } = await generateQuiz(learnVaultContent, { numQuestions: 15 });
+            // Fix: Destructure difficulty from the response.
+            const { questions, topic, difficulty } = await generateQuiz(learnVaultContent, { numQuestions: 15 });
             setMcqQuestions(questions);
             setMcqTopic(topic);
+            // Fix: Set the MCQ difficulty.
+            setMcqDifficulty(difficulty);
             setCurrentMcqIndex(0);
             setUserAnswers({});
             setSelectedAnswer(null);
             setView('mcq');
             setIsMcqTimerRunning(true);
+            // Fix: Set the start time for the MCQ.
+            setMcqStartTime(new Date());
         } catch (err) {
             setError(err instanceof Error ? err.message : 'Failed to generate MCQ test.');
         } finally {
@@ -278,17 +306,32 @@ const TestBuddy: React.FC<TestBuddyProps> = ({ learnVaultContent, onNavigateToVa
             }
         });
         if (user) {
-            const result = { score, total: mcqQuestions.length, topic: mcqTopic };
-            addMcqResult(user.uid, { ...result, completedAt: new Date().toISOString() });
+            // Fix: Construct a complete QuizResult object to pass to the handler.
+            const endTime = new Date();
+            const timeDiff = endTime.getTime() - (mcqStartTime?.getTime() || endTime.getTime());
+            const minutes = Math.floor(timeDiff / 60000);
+            const seconds = Math.floor((timeDiff % 60000) / 1000);
+
+            const result: Omit<QuizResult, 'quizId' | 'attemptedAt'> = {
+                title: mcqTopic,
+                difficulty: mcqDifficulty,
+                questions: mcqQuestions.length,
+                correctAnswers: score,
+                wrongAnswers: mcqQuestions.length - score,
+                score: parseFloat(((score / mcqQuestions.length) * 100).toFixed(2)),
+                timeTaken: `${minutes}m ${seconds}s`,
+            };
             onMcqComplete(result);
         }
         setView('mcq_results');
-    }, [mcqQuestions, mcqTopic, onMcqComplete, user]);
+    // Fix: Added new dependencies for the callback.
+    }, [mcqQuestions, mcqTopic, onMcqComplete, user, mcqStartTime, mcqDifficulty]);
 
     const handleFetchCodingProblem = useCallback(async (difficulty: CodingProblemDifficulty) => {
         setIsLoading(true);
         setCodingDifficulty(difficulty);
         setError(null);
+        setIsExecuting(false);
         try {
             const fetchedProblem = await generateCodingProblem(learnVaultContent, difficulty);
             setActiveCodingProblem(fetchedProblem);
@@ -310,15 +353,17 @@ const TestBuddy: React.FC<TestBuddyProps> = ({ learnVaultContent, onNavigateToVa
         setFailureExplanation(null);
         setCodeError(null);
 
-        const examplePromises = activeCodingProblem.examples.map(example =>
-            createSubmission(language, code, example.input, example.output)
-        );
-        const results = await Promise.all(examplePromises);
+        const testCasesToRun = activeCodingProblem.examples.map(example => ({
+            stdin: extractInputValue(example.input),
+            expectedOutput: example.output,
+        }));
+
+        const results = await evaluateCodeWithAI(language, code, testCasesToRun, activeCodingProblem);
 
         setRunResults(results.map((res, index) => ({
             input: activeCodingProblem.examples[index].input,
             expectedOutput: activeCodingProblem.examples[index].output,
-            userOutput: res.stdout || res.stderr || 'No output',
+            userOutput: res.compile_output || res.stderr || res.stdout || 'No output',
             status: res.status === 'Accepted' ? 'Passed' : 'Failed',
             error: res.stderr || res.compile_output
         })));
@@ -342,60 +387,67 @@ const TestBuddy: React.FC<TestBuddyProps> = ({ learnVaultContent, onNavigateToVa
         setHint(null);
         setFailureExplanation(null);
         setCodeError(null);
-        setSubmissionResults([]);
+        setSubmissionResults(null);
         setOverallSubmissionStatus('Running');
 
-        const resultsForFirestore: TestCaseResultForFirestore[] = [];
-        let allPassed = true;
+        const testCasesToSubmit = activeCodingProblem.testCases.map(tc => ({
+            stdin: extractInputValue(tc.input),
+            expectedOutput: tc.output,
+        }));
+
+        const results = await evaluateCodeWithAI(language, code, testCasesToSubmit, activeCodingProblem);
         
-        for (const testCase of activeCodingProblem.testCases) {
-            const result = await createSubmission(language, code, testCase.input, testCase.output);
-            const passed = result.status === 'Accepted';
+        const submissionDisplayResults = results.map((result, index) => ({
+            ...result,
+            passed: result.status === 'Accepted',
+            input: activeCodingProblem.testCases[index].input,
+            expected: activeCodingProblem.testCases[index].output,
+        }));
+        setSubmissionResults(submissionDisplayResults);
+
+        const firstFailureIndex = results.findIndex(r => r.status !== 'Accepted');
+        const passedAll = firstFailureIndex === -1;
+
+        const passedCount = submissionDisplayResults.filter(r => r.passed).length;
+        const score = (passedCount / submissionDisplayResults.length) * 100;
+
+        const resultData: Omit<TestResult, 'attemptedAt'> = {
+            testId: activeCodingProblem.id,
+            title: activeCodingProblem.title,
+            difficulty: activeCodingProblem.difficulty,
+            language: language,
+            codeSubmitted: code,
+            status: passedAll ? 'Passed' : 'Failed',
+            score: parseFloat(score.toFixed(2)),
+        };
+
+        onCodingAttempt(resultData);
+        
+
+        if (passedAll) {
+            setOverallSubmissionStatus('Accepted');
+            setIsCodingTimerRunning(false);
+        } else {
+            const failedResult = results[firstFailureIndex];
+            const failedTestCase = activeCodingProblem.testCases[firstFailureIndex];
+            setOverallSubmissionStatus(failedResult.status);
             
-            resultsForFirestore.push({
-                input: testCase.input,
-                expected: testCase.output,
-                actual: result.stdout || result.stderr || '',
-                passed,
-            });
+            const parsed = parseError(failedResult.compile_output || failedResult.stderr || '');
+            if (parsed) setCodeError(parsed);
 
-            setSubmissionResults(prev => [...(prev || []), { ...result, passed, input: testCase.input, expected: testCase.output }]);
-
-            if (!passed) {
-                allPassed = false;
-                setOverallSubmissionStatus(result.status);
-                
-                const parsed = parseError(result.compile_output || result.stderr || '');
-                if (parsed) {
-                    setCodeError(parsed);
-                }
-
-                // If it's a "Wrong Answer", generate an explanation
-                if (result.status === 'Wrong Answer') {
-                    setIsExplanationLoading(true);
-                    generateFailureExplanation(activeCodingProblem, code, {
-                        input: testCase.input,
-                        expected: testCase.output,
-                        actual: result.stdout || ''
-                    }).then(explanation => {
-                        setFailureExplanation(explanation);
-                        setIsExplanationLoading(false);
-                    });
-                }
-
-                break; // Stop on first failure
+            if (failedResult.status === 'Wrong Answer') {
+                setIsExplanationLoading(true);
+                generateFailureExplanation(activeCodingProblem, code, {
+                    input: failedTestCase.input,
+                    expected: failedTestCase.output,
+                    actual: failedResult.stdout || ''
+                }).then(explanation => {
+                    setFailureExplanation(explanation);
+                    setIsExplanationLoading(false);
+                });
             }
         }
         
-        if (allPassed) {
-            setOverallSubmissionStatus('Accepted');
-            setIsCodingTimerRunning(false);
-            // Save to Firestore
-            await addTestResult(user.uid, activeCodingProblem.id, { language, testCases: resultsForFirestore });
-            await updateUserOnSuccess(user.uid);
-            onCodingSuccess();
-        }
-
         setIsExecuting(false);
     };
     
@@ -643,7 +695,7 @@ const TestBuddy: React.FC<TestBuddyProps> = ({ learnVaultContent, onNavigateToVa
                                                 <div key={i} className={`p-2 rounded-md ${res.status === 'Passed' ? 'bg-green-50 dark:bg-green-900/40' : 'bg-red-50 dark:bg-red-900/40'}`}>
                                                     <p className="font-semibold text-sm flex items-center gap-2">{res.status === 'Passed' ? <CheckCircleIcon className="h-5 w-5 text-green-500"/> : <XCircleIcon className="h-5 w-5 text-red-500"/>} Example #{i + 1}</p>
                                                      {res.status === 'Failed' && (
-                                                        <div className="text-xs font-mono mt-1 pl-7">
+                                                        <div className="text-xs font-mono mt-1 pl-7 whitespace-pre-wrap">
                                                             <p>Expected: <code className="bg-gray-200 dark:bg-gray-700 p-1 rounded">{res.expectedOutput}</code></p>
                                                             <p>Got: <code className="bg-gray-200 dark:bg-gray-700 p-1 rounded">{res.userOutput}</code></p>
                                                         </div>
@@ -667,8 +719,8 @@ const TestBuddy: React.FC<TestBuddyProps> = ({ learnVaultContent, onNavigateToVa
                                                     {overallSubmissionStatus === 'Accepted' && (
                                                         <div className="mt-4 flex flex-col sm:flex-row gap-4 items-center">
                                                             <p className="font-semibold text-green-600 dark:text-green-400">Great job! All test cases passed. 🚀</p>
-                                                            <button onClick={() => handleFetchCodingProblem(codingDifficulty!)} className="flex items-center gap-2 px-4 py-2 bg-blue-500 text-white font-semibold rounded-lg shadow-md hover:bg-blue-600 transition-colors">
-                                                                Next Question <ArrowRightIcon className="h-5 w-5"/>
+                                                            <button onClick={() => handleFetchCodingProblem(codingDifficulty!)} className="flex items-center gap-2 px-6 py-3 bg-blue-500 text-white font-semibold rounded-lg shadow-md hover:bg-blue-600 transition-colors text-base">
+                                                                Next Problem <ArrowRightIcon className="h-5 w-5"/>
                                                             </button>
                                                         </div>
                                                     )}
@@ -704,7 +756,7 @@ const TestBuddy: React.FC<TestBuddyProps> = ({ learnVaultContent, onNavigateToVa
                                                                         </div>
                                                                         <div>
                                                                             <p className="font-sans font-semibold text-gray-500 dark:text-gray-400">Your Output:</p>
-                                                                            <pre className={`p-2 rounded whitespace-pre-wrap ${failedTest.stderr ? 'bg-red-100 dark:bg-red-900/50 text-red-800 dark:text-red-200' : 'bg-gray-200 dark:bg-gray-700'}`}><code>{failedTest.stdout || failedTest.stderr || 'No output'}</code></pre>
+                                                                            <pre className={`p-2 rounded whitespace-pre-wrap ${failedTest.stderr || failedTest.compile_output ? 'bg-red-100 dark:bg-red-900/50 text-red-800 dark:text-red-200' : 'bg-gray-200 dark:bg-gray-700'}`}><code>{failedTest.compile_output || failedTest.stderr || failedTest.stdout || 'No output'}</code></pre>
                                                                         </div>
                                                                     </div>
                                                                      {isExplanationLoading ? (

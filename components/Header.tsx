@@ -8,9 +8,13 @@ interface HeaderProps {
   onSignOut: () => void;
 }
 
-const getInitials = (firstName?: string, lastName?: string) => {
-    if (!firstName || !lastName) return 'AI';
-    return `${firstName[0]}${lastName[0]}`.toUpperCase();
+const getInitials = (name?: string) => {
+    if (!name) return 'AI';
+    const parts = name.split(' ');
+    if (parts.length > 1) {
+        return `${parts[0][0] || ''}${parts[parts.length - 1][0] || ''}`.toUpperCase();
+    }
+    return `${name[0] || ''}${name[1] || ''}`.toUpperCase();
 }
 
 const Header: React.FC<HeaderProps> = ({ onMenuClick, userData, onSignOut }) => {
@@ -29,7 +33,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, userData, onSignOut }) => 
       </div>
       <div className="flex items-center space-x-4">
         <div className="flex items-center justify-center h-10 w-10 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 text-white font-bold text-lg">
-            {getInitials(userData?.firstName, userData?.lastName)}
+            {getInitials(userData?.profile.name)}
         </div>
          <button onClick={onSignOut} className="p-2 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-full" aria-label="Sign out">
             <LogOutIcon className="h-6 w-6" />

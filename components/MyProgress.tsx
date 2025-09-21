@@ -1,241 +1,324 @@
-import React, { useMemo, useState, useEffect } from 'react';
-import { type McqResult, type UserData } from '../types';
-import { generateProgressInsights } from '../services/geminiService';
-import { LightbulbIcon, PencilRulerIcon, TrendingUpIcon, TargetIcon, AwardIcon, ClockIcon, HelpCircleIcon, CodeIcon } from './Icons';
+import React, { useState, useEffect, useMemo } from 'react';
+import { useAuth } from '../context/AuthContext';
+import { type UserData, type QuizResult, type TestResult } from '../types';
+import { LightbulbIcon, TrendingUpIcon, CodeIcon, TargetIcon, PencilRulerIcon as QuizzesTakenIcon, FlaskConicalIcon, PencilRulerIcon } from './Icons';
+import { db } from '../services/firebaseConfig';
+import { generateProgressInsights, determineWeakestTopic } from '../services/geminiService';
+import { ModuleLoadingIndicator } from './LoadingIndicators';
 
 interface MyProgressProps {
     userData: UserData | null;
-    mcqHistory: McqResult[];
     onNavigateToQuiz: () => void;
+    onNavigateToTestBuddy: () => void;
 }
 
-const StatCard: React.FC<{ icon: React.ReactNode; title: string; value: string; color: string }> = ({ icon, title, value, color }) => (
-    <div className="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-md border border-gray-200 dark:border-gray-700 flex items-center space-x-4">
-        <div className={`p-3 rounded-full ${color}`}>
+const StatCard: React.FC<{
+    icon: React.ReactNode;
+    title: string;
+    value: string | number;
+    iconBgColor: string;
+}> = ({ icon, title, value, iconBgColor }) => (
+    <div className="bg-white dark:bg-gray-800 p-5 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 flex items-start space-x-4 min-h-[100px]">
+        <div className={`flex-shrink-0 h-12 w-12 rounded-full flex items-center justify-center ${iconBgColor}`}>
             {icon}
         </div>
         <div>
-            <p className="text-sm text-gray-500 dark:text-gray-400 font-medium">{title}</p>
-            <p className="text-xl font-bold text-gray-800 dark:text-white">{value}</p>
+            <p className="text-sm font-medium text-gray-500 dark:text-gray-400">{title}</p>
+            <p className="text-xl font-bold text-gray-800 dark:text-white break-words">{value}</p>
         </div>
     </div>
 );
 
-const LineChart: React.FC<{ data: { x: number, y: number }[] }> = ({ data }) => {
-    if (data.length < 2) {
-        return <div className="h-64 flex items-center justify-center text-gray-500 dark:text-gray-400">Complete at least two quizzes to see your progress trend.</div>;
+const QuizPerformanceChart: React.FC<{ data: QuizResult[] }> = ({ data }) => {
+    if (!data || data.length < 2) {
+        return (
+             <div className="flex items-center justify-center h-full text-gray-500 dark:text-gray-400 p-4 text-center">
+                Complete at least two quizzes to see your performance over time.
+            </div>
+        )
     }
 
     const width = 500;
     const height = 250;
     const padding = 40;
 
-    const maxX = data.length - 1;
-    const points = data.map((point, i) => {
-        const x = (i / maxX) * (width - 2 * padding) + padding;
-        const y = height - padding - (point.y / 100) * (height - 2 * padding);
-        return `${x},${y}`;
-    }).join(' ');
-    
+    const points = data.map((quiz, i) => {
+        const x = data.length > 1 ? (i / (data.length - 1)) * (width - padding * 2) + padding : width / 2;
+        const y = height - padding - ((quiz.score / 100) * (height - padding * 2));
+        return { x, y };
+    });
+
+    const pathD = points.map((p, i) => i === 0 ? `M ${p.x} ${p.y}` : `L ${p.x} ${p.y}`).join(' ');
+
     const yAxisLabels = [0, 25, 50, 75, 100];
-    const xAxisLabels = data.map((_, i) => i + 1);
+    const xAxisLabels = data.map((_, i) => `Quiz ${i + 1}`);
 
     return (
-         <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-auto">
-            {/* Y-axis grid lines and labels */}
+        <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-full" aria-label="Quiz Performance Chart">
+            {/* Y Axis Grid Lines & Labels */}
             {yAxisLabels.map(label => {
-                const y = height - padding - (label / 100) * (height - 2 * padding);
+                const y = height - padding - ((label / 100) * (height - padding * 2));
                 return (
                     <g key={label}>
-                        <line x1={padding} y1={y} x2={width - padding} y2={y} className="stroke-gray-200 dark:stroke-gray-700" strokeDasharray="2,2" />
-                        <text x={padding - 10} y={y + 5} className="text-xs fill-current text-gray-500 dark:text-gray-400" textAnchor="end">{label}%</text>
+                        <line x1={padding} y1={y} x2={width - padding} y2={y} strokeDasharray="4" className="stroke-gray-200 dark:stroke-gray-700" />
+                        <text x={padding - 10} y={y + 5} textAnchor="end" className="text-xs fill-current text-gray-500 dark:text-gray-400">
+                            {label}%
+                        </text>
                     </g>
-                )
-            })}
-             {/* X-axis labels */}
-            {xAxisLabels.map((label, i) => {
-                 const x = (i / maxX) * (width - 2 * padding) + padding;
-                 return (
-                    <text key={label} x={x} y={height - padding + 20} className="text-xs fill-current text-gray-500 dark:text-gray-400" textAnchor="middle">Quiz {label}</text>
-                 )
+                );
             })}
 
-            {/* Polyline for the chart */}
-            <polyline fill="none" className="stroke-blue-500" strokeWidth="2" points={points} />
-            
-             {/* Circles for data points */}
-            {data.map((point, i) => {
-                const x = (i / maxX) * (width - 2 * padding) + padding;
-                const y = height - padding - (point.y / 100) * (height - 2 * padding);
-                return <circle key={i} cx={x} cy={y} r="3" className="fill-blue-500 stroke-white dark:stroke-gray-800" strokeWidth="2" />;
+            {/* X Axis Labels */}
+            {xAxisLabels.slice(0, 1).concat(xAxisLabels.slice(-1)).map((label, i) => {
+                 const index = i === 0 ? 0 : xAxisLabels.length - 1;
+                 const x = (index / (xAxisLabels.length - 1)) * (width - padding * 2) + padding;
+                return (
+                    <text key={label} x={x} y={height - padding + 20} textAnchor="middle" className="text-xs fill-current text-gray-500 dark:text-gray-400">
+                        {label}
+                    </text>
+                );
             })}
+            
+            <path d={pathD} fill="none" strokeWidth="3" className="stroke-blue-500" />
+            
+            {points.map((p, i) => (
+                <circle key={i} cx={p.x} cy={p.y} r="4" className="fill-blue-500" />
+            ))}
         </svg>
     );
 };
 
 
-const MyProgress: React.FC<MyProgressProps> = ({ userData, mcqHistory, onNavigateToQuiz }) => {
+const MyProgress: React.FC<MyProgressProps> = ({ userData, onNavigateToQuiz, onNavigateToTestBuddy }) => {
+    const { user } = useAuth();
     const [insights, setInsights] = useState<string>('');
-    const [isLoadingInsights, setIsLoadingInsights] = useState<boolean>(false);
+    const [weakestTopic, setWeakestTopic] = useState<string>('');
+    const [quizHistory, setQuizHistory] = useState<QuizResult[]>([]);
+    const [codingHistory, setCodingHistory] = useState<TestResult[]>([]);
+    const [isLoadingHistory, setIsLoadingHistory] = useState(true);
+    const [isInsightsLoading, setIsInsightsLoading] = useState(true);
 
-    const stats = useMemo(() => {
-        const quizzesTaken = mcqHistory.length;
-
-        const totalCorrect = mcqHistory.reduce((sum, result) => sum + result.score, 0);
-        const totalQuestions = mcqHistory.reduce((sum, result) => sum + result.total, 0);
-        const overallAccuracy = totalQuestions > 0 ? Math.round((totalCorrect / totalQuestions) * 100) : 0;
-        
-        const chartData = mcqHistory.map((result, index) => ({
-            x: index,
-            y: Math.round((result.score / result.total) * 100),
-        }));
-        
-        const solvedProblems = userData?.progress?.solvedProblems || 0;
-
-        let weakestTopic;
-        if (quizzesTaken === 0) {
-             weakestTopic = { name: 'N/A', color: 'bg-gray-500', icon: <TargetIcon className="h-6 w-6 text-white"/> };
-        } else if (quizzesTaken < 2) {
-             weakestTopic = { name: "Not enough data yet", color: "bg-gray-500", icon: <HelpCircleIcon className="h-6 w-6 text-white"/>, };
-        } else {
-            const topicStats: Record<string, { totalScore: number; totalQuestions: number }> = {};
-            mcqHistory.forEach(result => {
-                if (!topicStats[result.topic]) {
-                    topicStats[result.topic] = { totalScore: 0, totalQuestions: 0 };
-                }
-                topicStats[result.topic].totalScore += result.score;
-                topicStats[result.topic].totalQuestions += result.total;
-            });
-
-            let weakestTopicName = '';
-            let lowestAccuracy = 101;
-
-            Object.entries(topicStats).forEach(([topic, data]) => {
-                if (data.totalQuestions > 0) {
-                    const accuracy = (data.totalScore / data.totalQuestions) * 100;
-                    if (accuracy < lowestAccuracy) {
-                        lowestAccuracy = accuracy;
-                        weakestTopicName = topic;
-                    }
-                }
-            });
-
-            if (lowestAccuracy > 70) {
-                weakestTopic = { name: "All topics strong!", color: "bg-green-500", icon: <AwardIcon className="h-6 w-6 text-white"/> };
-            } else {
-                let color = "bg-red-500";
-                if (lowestAccuracy >= 50) {
-                    color = "bg-orange-500";
-                }
-                weakestTopic = { name: weakestTopicName, color: color, icon: <TargetIcon className="h-6 w-6 text-white"/> };
-            }
+    // Effect to fetch history with real-time listeners
+    useEffect(() => {
+        if (!user) {
+            setQuizHistory([]);
+            setCodingHistory([]);
+            setIsLoadingHistory(false);
+            return;
         }
+
+        setIsLoadingHistory(true);
+
+        const quizUnsubscribe = db.collection('users').doc(user.uid).collection('quizResults')
+            .orderBy('attemptedAt', 'asc')
+            .onSnapshot(snapshot => {
+                const quizzes = snapshot.docs.map(doc => {
+                    const data = doc.data();
+                    return {
+                        ...data,
+                        quizId: doc.id,
+                        attemptedAt: data.attemptedAt?.toDate().toISOString() || new Date().toISOString(),
+                    } as QuizResult;
+                });
+                setQuizHistory(quizzes);
+                setIsLoadingHistory(false); // Considered loaded after first fetch
+            }, err => {
+                console.error("Error fetching quiz history:", err);
+                setIsLoadingHistory(false);
+            });
+
+        const codingUnsubscribe = db.collection('users').doc(user.uid).collection('codingResults')
+            .orderBy('attemptedAt', 'asc')
+            .onSnapshot(snapshot => {
+                const tests = snapshot.docs.map(doc => {
+                    const data = doc.data();
+                    return {
+                        ...data,
+                        testId: doc.id,
+                        attemptedAt: data.attemptedAt?.toDate().toISOString() || new Date().toISOString(),
+                    } as TestResult;
+                });
+                setCodingHistory(tests);
+            }, err => {
+                console.error("Error fetching coding history:", err);
+            });
+
+        return () => {
+            quizUnsubscribe();
+            codingUnsubscribe();
+        };
+    }, [user]);
+
+    // Effect to generate AI insights when history changes
+    useEffect(() => {
+        if (isLoadingHistory) {
+            return;
+        }
+
+        const hasData = quizHistory.length > 0 || codingHistory.length > 0;
+        if (!hasData) {
+            setIsInsightsLoading(false);
+            return;
+        }
+        
+        setIsInsightsLoading(true);
+        let isMounted = true;
+
+        const generateInsights = async () => {
+             try {
+                // Prepare summary for Gemini
+                const quizSummary = quizHistory.map(q => `- Quiz: "${q.title}", Score: ${q.score}%`).join('\n');
+                const codingSummary = codingHistory.map(c => `- Coding Test: "${c.title}", Status: ${c.status}`).join('\n');
+                const performanceSummary = `
+                    Quiz Performance:
+                    ${quizSummary}
+
+                    Coding Performance:
+                    ${codingSummary}
+                `;
+
+                // Fire off Gemini calls
+                const [insightText, topicText] = await Promise.all([
+                    generateProgressInsights(performanceSummary),
+                    determineWeakestTopic(performanceSummary),
+                ]);
+
+                if (!isMounted) return;
+
+                setInsights(insightText);
+                setWeakestTopic(topicText);
+
+            } catch (error) {
+                console.error("Failed to generate insights:", error);
+                if (isMounted) {
+                    setInsights("Could not load AI insights at this time. Please try again later.");
+                    setWeakestTopic("N/A");
+                }
+            } finally {
+                if (isMounted) {
+                    setIsInsightsLoading(false);
+                }
+            }
+        };
+
+        generateInsights();
+        return () => { isMounted = false };
+
+    }, [quizHistory, codingHistory, isLoadingHistory]);
+
+
+    const performanceStats = useMemo(() => {
+        const quizzesTaken = quizHistory.length;
+        const totalQuizScore = quizHistory.reduce((sum, quiz) => sum + quiz.score, 0);
+        const quizAccuracy = quizzesTaken > 0 ? Math.round(totalQuizScore / quizzesTaken) : 0;
+        
+        const passedTests = codingHistory.filter(test => test.status === 'Passed');
+        const problemsSolved = new Set(passedTests.map(test => test.testId)).size;
 
         return {
-            overallAccuracy,
             quizzesTaken,
-            chartData,
-            weakestTopic,
-            solvedProblems,
+            quizAccuracy,
+            problemsSolved,
         };
-    }, [mcqHistory, userData]);
+    }, [quizHistory, codingHistory]);
 
-    useEffect(() => {
-        if (mcqHistory.length > 0 || stats.solvedProblems > 0) {
-            const fetchInsights = async () => {
-                setIsLoadingInsights(true);
-                const summary = `
-                    Quizzes Taken: ${stats.quizzesTaken}
-                    Quiz Accuracy: ${stats.overallAccuracy}%
-                    Recent Quiz Scores (as percentages): ${stats.chartData.slice(-5).map(d => `${d.y}%`).join(', ')}
-                    Coding Problems Solved: ${stats.solvedProblems}
-                    Identified Weakest Quiz Topic: ${stats.weakestTopic.name.includes('data') || stats.weakestTopic.name.includes('strong') ? 'N/A' : stats.weakestTopic.name}
-                `;
-                const aiInsight = await generateProgressInsights(summary);
-                setInsights(aiInsight);
-                setIsLoadingInsights(false);
-            };
-            fetchInsights();
+    const getFirstName = () => {
+        const firestoreName = userData?.profile?.name;
+        if (firestoreName && firestoreName.trim()) {
+            return firestoreName.trim().split(' ')[0];
         }
-    }, [mcqHistory, stats]);
+        if (user?.email) {
+            return user.email.split('@')[0];
+        }
+        return 'Learner';
+    };
+    
+    const firstName = getFirstName();
+    const hasProgress = !isLoadingHistory && (quizHistory.length > 0 || codingHistory.length > 0);
 
-    if (mcqHistory.length === 0 && stats.solvedProblems === 0) {
+    if (!hasProgress && !isLoadingHistory) {
         return (
             <div className="w-full h-full flex flex-col items-center justify-center text-center p-4">
-                <div className="mt-8 p-8 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg">
-                    <LightbulbIcon className="h-12 w-12 text-gray-400 dark:text-gray-500 mx-auto mb-4" />
-                    <h2 className="text-xl font-semibold text-gray-800 dark:text-white">Start Your Learning Journey, {userData?.firstName}!</h2>
-                    <p className="text-gray-600 dark:text-gray-400 mt-2 mb-6">
-                        You haven't taken any tests yet. Complete a quiz or coding challenge to start tracking your progress.
-                    </p>
-                    <button onClick={onNavigateToQuiz} className="px-6 py-3 bg-blue-500 text-white font-semibold rounded-lg shadow-md hover:bg-blue-600 transition-colors flex items-center gap-2 mx-auto">
-                        <PencilRulerIcon className="h-5 w-5"/>
-                        Go to SmartQuiz
-                    </button>
-                </div>
-            </div>
-        );
+               <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl shadow-sm max-w-lg p-10">
+                   <LightbulbIcon className="h-12 w-12 text-gray-400 mx-auto mb-4" />
+                   <h2 className="text-2xl font-bold text-gray-800 dark:text-white">Start Your Learning Journey!</h2>
+                   <p className="text-gray-600 dark:text-gray-400 mt-4">
+                       You haven't taken any tests yet. Complete a quiz or coding challenge to start tracking your progress.
+                   </p>
+                    <div className="mt-8 flex flex-col sm:flex-row justify-center gap-4">
+                        <button
+                            onClick={onNavigateToQuiz}
+                            className="flex items-center justify-center gap-2 px-6 py-3 bg-blue-500 text-white font-semibold rounded-lg shadow-md hover:bg-blue-600 transition-colors"
+                        >
+                           <PencilRulerIcon className="h-5 w-5" />
+                           Take a Quiz
+                       </button>
+                       <button
+                           onClick={onNavigateToTestBuddy}
+                           className="flex items-center justify-center gap-2 px-6 py-3 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg font-semibold text-gray-800 dark:text-white hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+                       >
+                           <FlaskConicalIcon className="h-5 w-5" />
+                           Start Test
+                       </button>
+                   </div>
+               </div>
+           </div>
+       );
     }
     
     return (
-        <div className="p-4 md:p-6 space-y-6">
-            <h1 className="text-3xl font-bold text-gray-800 dark:text-white">Welcome Back, {userData?.firstName}!</h1>
-            <p className="text-gray-600 dark:text-gray-400">Here's a snapshot of your progress. Keep up the great work!</p>
-            
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-                <StatCard icon={<TrendingUpIcon className="h-6 w-6 text-white"/>} title="Quiz Accuracy" value={`${stats.overallAccuracy}%`} color="bg-green-500" />
-                <StatCard icon={<CodeIcon className="h-6 w-6 text-white"/>} title="Problems Solved" value={`${stats.solvedProblems}`} color="bg-indigo-500" />
-                <StatCard icon={<PencilRulerIcon className="h-6 w-6 text-white"/>} title="Quizzes Taken" value={stats.quizzesTaken.toString()} color="bg-yellow-500" />
-                <StatCard icon={stats.weakestTopic.icon} title="Weakest Topic" value={stats.weakestTopic.name} color={stats.weakestTopic.color} />
+        <div className="p-4 md:p-6 space-y-8 max-w-7xl mx-auto animate-fade-in">
+            <div>
+                <h1 className="text-3xl font-bold text-gray-800 dark:text-white">Welcome Back, {firstName}! 😊</h1>
+                <p className="text-gray-600 dark:text-gray-400 mt-1">Here's a snapshot of your progress. Keep up the great work!</p>
             </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                <div className="lg:col-span-2 bg-white dark:bg-gray-800 p-6 rounded-xl shadow-md border border-gray-200 dark:border-gray-700">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+                <StatCard 
+                    icon={<TrendingUpIcon className="h-6 w-6 text-green-700 dark:text-green-300"/>} 
+                    title="Quiz Accuracy" 
+                    value={`${performanceStats.quizAccuracy}%`} 
+                    iconBgColor="bg-green-100 dark:bg-green-900/50"
+                />
+                <StatCard 
+                    icon={<CodeIcon className="h-6 w-6 text-blue-700 dark:text-blue-300"/>} 
+                    title="Problems Solved" 
+                    value={performanceStats.problemsSolved} 
+                    iconBgColor="bg-blue-100 dark:bg-blue-900/50"
+                />
+                <StatCard 
+                    icon={<QuizzesTakenIcon className="h-6 w-6 text-yellow-700 dark:text-yellow-300"/>} 
+                    title="Quizzes Taken" 
+                    value={performanceStats.quizzesTaken} 
+                    iconBgColor="bg-yellow-100 dark:bg-yellow-900/50"
+                />
+                <StatCard 
+                    icon={<TargetIcon className="h-6 w-6 text-orange-700 dark:text-orange-300"/>} 
+                    title="Weakest Topic" 
+                    value={isInsightsLoading ? 'Analyzing...' : weakestTopic || 'N/A'}
+                    iconBgColor="bg-orange-100 dark:bg-orange-900/50"
+                />
+            </div>
+            
+            <div className="grid grid-cols-1 lg:grid-cols-5 gap-8">
+                <div className="lg:col-span-3 bg-white dark:bg-gray-800 p-6 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700">
                     <h2 className="text-xl font-bold text-gray-800 dark:text-white mb-4">Quiz Performance Over Time</h2>
-                    <LineChart data={stats.chartData} />
+                    <div className="h-64">
+                         {isLoadingHistory ? <ModuleLoadingIndicator text="" /> : <QuizPerformanceChart data={quizHistory} />}
+                    </div>
                 </div>
-                <div className="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-md border border-gray-200 dark:border-gray-700 flex flex-col">
+
+                <div className="lg:col-span-2 bg-white dark:bg-gray-800 p-6 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 flex flex-col">
                      <h2 className="text-xl font-bold text-gray-800 dark:text-white mb-4">AI Coach Insights</h2>
-                     <div className="flex-grow p-4 bg-blue-50 dark:bg-gray-700/50 rounded-lg flex items-center">
-                        {isLoadingInsights ? (
-                             <div className="flex items-center space-x-2 text-gray-500 dark:text-gray-400">
-                                <svg className="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
-                                <span>Generating feedback...</span>
-                            </div>
-                        ) : (
-                             <p className="text-gray-700 dark:text-gray-300 italic">"{insights}"</p>
+                     <div className="bg-blue-50 dark:bg-blue-900/30 p-4 rounded-lg flex-grow flex items-center justify-center">
+                        {isInsightsLoading ? <ModuleLoadingIndicator text="" /> : (
+                            <p className="text-gray-700 dark:text-gray-300 italic">
+                                "{insights}"
+                            </p>
                         )}
                      </div>
                 </div>
             </div>
-
-             {mcqHistory.length > 0 && (
-                <div className="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-md border border-gray-200 dark:border-gray-700">
-                    <h2 className="text-xl font-bold text-gray-800 dark:text-white mb-4">Recent Quizzes</h2>
-                    <div className="overflow-x-auto">
-                        <table className="w-full text-left">
-                            <thead>
-                                <tr className="border-b border-gray-200 dark:border-gray-700">
-                                    <th className="p-3">Topic</th>
-                                    <th className="p-3">Score</th>
-                                    <th className="p-3">Accuracy</th>
-                                    <th className="p-3">Date</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {mcqHistory.slice().reverse().slice(0, 5).map((attempt, index) => (
-                                    <tr key={index} className="border-b border-gray-100 dark:border-gray-700/50">
-                                        <td className="p-3 font-medium">{attempt.topic}</td>
-                                        <td className="p-3">{attempt.score} / {attempt.total}</td>
-                                        <td className="p-3 font-semibold text-blue-600 dark:text-blue-400">{Math.round((attempt.score / attempt.total) * 100)}%</td>
-                                        <td className="p-3 text-sm text-gray-500 dark:text-gray-400">{new Date(attempt.completedAt).toLocaleDateString()}</td>
-                                    </tr>
-                                ))}
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            )}
         </div>
     );
 };

@@ -36,13 +36,48 @@ export interface QuizConfig {
   numQuestions: number;
 }
 
-// Types for MyProgress feature / MCQ Results
-export interface McqResult {
-  score: number;
-  total: number;
-  topic: string;
-  completedAt: string;
+// NEW USER PROFILE & PROGRESS TYPES to align with new schema
+export interface UserProfile {
+  name: string;
+  email: string;
+  profilePic: string; // Initials
 }
+
+export interface UserData {
+  uid: string;
+  profile: UserProfile;
+  learnVaultContent: string;
+  createdAt: string; // ISO String
+}
+
+
+// UPDATED RESULT TYPES FOR SUB-COLLECTIONS
+export interface QuizResult {
+  quizId: string;
+  title: string;
+  difficulty: 'Easy' | 'Medium' | 'Hard';
+  questions: number; // Total questions
+  correctAnswers: number;
+  wrongAnswers: number;
+  score: number; // Percentage
+  attemptedAt: string; // ISO string
+  timeTaken: string; // e.g., "8m 30s"
+}
+
+export interface TestResult {
+  testId: string;
+  title: string;
+  difficulty: CodingProblemDifficulty;
+  language: Language;
+  codeSubmitted: string;
+  status: 'Passed' | 'Failed';
+  score: number; // Percentage
+  attemptedAt: string; // ISO string
+}
+
+export type RecentActivityItem =
+  | { type: 'quiz'; data: QuizResult & { id: string } }
+  | { type: 'test'; data: TestResult & { id: string } };
 
 
 // Types for TestBuddy feature
@@ -93,21 +128,6 @@ export interface TestCaseResult {
     error?: string;
 }
 
-// Minimal result object for storing in Firestore subcollection
-export interface TestCaseResultForFirestore {
-    input: string;
-    expected: string;
-    actual: string;
-    passed: boolean;
-}
-
-export interface TestResultForFirestore {
-    language: Language;
-    testCases: TestCaseResultForFirestore[];
-    submittedAt: any; // Will be a Firestore ServerTimestamp
-}
-
-
 // Types for SkillPath feature
 export enum ResourceType {
   Course = 'Course',
@@ -134,27 +154,6 @@ export interface SkillPathResponse {
 export interface Concept {
     title: string;
     definition: string;
-    explanation: string[];
+    explanation:string[];
     examples: string[];
-}
-
-// Types for Firebase User Data
-export interface UserProgress {
-  accuracy: number;
-  weakTopics: string[];
-  lastQuizScore: number;
-  timeSpent: number;
-  solvedProblems: number;
-}
-
-export interface UserData {
-  uid: string;
-  firstName: string;
-  lastName: string;
-  email: string;
-  createdAt: string; // ISO String Date
-  lastActive: string; // ISO String Date
-  progress: UserProgress;
-  learnVaultContent: string;
-  mcqHistory: McqResult[];
 }

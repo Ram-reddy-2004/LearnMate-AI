@@ -32,20 +32,13 @@ export const AuthPage: React.FC = () => {
                 
                 // Fix: Use v8 syntax for setting a document and server timestamp.
                 await db.collection("users").doc(user!.uid).set({
-                    firstName,
-                    lastName,
-                    email,
-                    createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-                    lastActive: firebase.firestore.FieldValue.serverTimestamp(),
-                    progress: {
-                      accuracy: 0,
-                      weakTopics: [],
-                      lastQuizScore: 0,
-                      timeSpent: 0,
-                      solvedProblems: 0,
+                    profile: {
+                        name: `${firstName} ${lastName}`,
+                        email: email,
+                        profilePic: `${firstName[0] || ''}${lastName[0] || ''}`.toUpperCase(),
                     },
                     learnVaultContent: '',
-                    mcqHistory: [],
+                    createdAt: firebase.firestore.FieldValue.serverTimestamp(),
                 });
 
                 setSuccessMessage('✅ Account created successfully! You are now logged in.');

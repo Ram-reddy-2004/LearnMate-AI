@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 // Fix: Remove unused 'signOut' import from Firebase v9.
-import { auth } from './services/firebaseConfig';
+import { auth, db } from './services/firebaseConfig';
 import { useAuth } from './context/AuthContext';
 import Header from './components/Header';
 import ModuleSidebar from './components/ModuleSidebar';
@@ -14,43 +14,74 @@ import SkillPath from './components/SkillPath';
 import LearnGuide from './components/LearnGuide';
 import { AuthPage } from './components/AuthPage';
 import { ModuleLoadingIndicator } from './components/LoadingIndicators';
-import { type Message, Sender, type McqResult, UserData } from './types';
+import { type Message, Sender, UserData, QuizResult, TestResult } from './types';
 import { generateContent } from './services/geminiService';
-import { updateLearnVault, addMcqResult, updateUserOnSuccess } from './services/firebaseService';
-
-const OfflineBanner: React.FC = () => (
-    <div className="fixed bottom-4 left-1/2 -translate-x-1/2 bg-gray-800 dark:bg-gray-200 text-white dark:text-black text-center p-3 rounded-lg shadow-lg z-50 text-sm font-medium">
-        <div className="flex items-center justify-center gap-2">
-            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" x2="12.01" y1="20" y2="20"/><line x1="2" x2="22" y1="2" y2="22"/></svg>
-            <span>You are currently offline. Changes will sync when you reconnect.</span>
-        </div>
-    </div>
-);
+import { updateLearnVault, saveQuizResult, saveCodingResult } from './services/firebaseService';
 
 
 const App: React.FC = () => {
-  const { user, userData, isLoading: isAuthLoading, isOffline } = useAuth();
+  const { user, isLoading: isAuthLoading } = useAuth();
+  const [userData, setUserData] = useState<UserData | null>(null);
+  const [isUserDataLoading, setIsUserDataLoading] = useState(true);
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [activeModule, setActiveModule] = useState<string>('MyProgress');
   
-  // State is now driven by userData from Firestore
   const [learnVaultContent, setLearnVaultContent] = useState<string>('');
-  const [mcqHistory, setMcqHistory] = useState<McqResult[]>([]);
   
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  
+  useEffect(() => {
+    if (!user) {
+        setUserData(null);
+        setIsUserDataLoading(false);
+        return;
+    }
+
+    setIsUserDataLoading(true);
+    const userDocRef = db.collection('users').doc(user.uid);
+    
+    const unsubscribe = userDocRef.onSnapshot(
+      (doc) => {
+        if (doc.exists) {
+          const data = doc.data() as any;
+          const toISOString = (timestamp: any): string => {
+            if (timestamp && typeof timestamp.toDate === 'function') {
+              return timestamp.toDate().toISOString();
+            }
+            return new Date().toISOString(); // Fallback
+          };
+          
+          setUserData({
+            uid: doc.id,
+            profile: data.profile,
+            learnVaultContent: data.learnVaultContent,
+            createdAt: toISOString(data.createdAt),
+          } as UserData);
+        } else {
+          setUserData(null);
+        }
+        setIsUserDataLoading(false);
+      },
+      (err) => {
+        console.error("Error fetching user data:", err);
+        setUserData(null);
+        setIsUserDataLoading(false);
+      }
+    );
+
+    return () => unsubscribe();
+  }, [user]);
 
   useEffect(() => {
     if (userData) {
       setLearnVaultContent(userData.learnVaultContent || '');
-      setMcqHistory(userData.mcqHistory || []);
       setActiveModule('MyProgress'); // Default to progress page on login
     } else {
       // Reset state on logout
       setLearnVaultContent('');
-      setMcqHistory([]);
     }
   }, [userData]);
 
@@ -112,26 +143,19 @@ const App: React.FC = () => {
     }
   }, [user, learnVaultContent]);
 
-  const handleMcqCompletion = useCallback(async (result: { score: number; total: number; topic: string }) => {
+  const handleMcqCompletion = useCallback(async (result: Omit<QuizResult, 'quizId' | 'attemptedAt'>) => {
     if (!user) return;
-    const newResult: McqResult = {
-      ...result,
-      completedAt: new Date().toISOString(),
-    };
-    setMcqHistory(prev => [...prev, newResult]); // Optimistic UI update
     try {
-      await addMcqResult(user.uid, newResult);
+      await saveQuizResult(user.uid, result);
     } catch (e) {
       console.error("Failed to save quiz result:", e);
     }
   }, [user]);
   
-  const handleCodingSuccess = useCallback(async () => {
+  const handleCodingAttempt = useCallback(async (result: Omit<TestResult, 'attemptedAt'>) => {
     if (!user) return;
-    // This function will just update the user's progress summary.
-    // The detailed results are handled within TestBuddy.
     try {
-        await updateUserOnSuccess(user.uid);
+        await saveCodingResult(user.uid, result);
     } catch(e) {
         console.error("Failed to update user progress:", e);
     }
@@ -147,10 +171,10 @@ const App: React.FC = () => {
     }
   };
 
-  if (isAuthLoading) {
+  if (isAuthLoading || isUserDataLoading) {
     return (
         <div className="flex items-center justify-center min-h-screen">
-            <ModuleLoadingIndicator text="Authenticating..." />
+            <ModuleLoadingIndicator text="Loading LearnMate..." />
         </div>
     );
   }
@@ -177,15 +201,15 @@ const App: React.FC = () => {
       case 'MyProgress':
         return <MyProgress 
                     userData={userData}
-                    mcqHistory={mcqHistory} 
-                    onNavigateToQuiz={() => handleModuleChange('SmartQuiz')} 
+                    onNavigateToQuiz={() => handleModuleChange('SmartQuiz')}
+                    onNavigateToTestBuddy={() => handleModuleChange('TestBuddy')}
                />;
       case 'TestBuddy':
         return <TestBuddy
                     learnVaultContent={learnVaultContent}
                     onNavigateToVault={() => handleModuleChange('LearnVault')}
                     onMcqComplete={handleMcqCompletion}
-                    onCodingSuccess={handleCodingSuccess}
+                    onCodingAttempt={handleCodingAttempt}
                 />;
       case 'SkillPath':
         return <SkillPath />;
@@ -198,7 +222,6 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen w-full font-sans bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 flex">
-      {isOffline && <OfflineBanner />}
       <ModuleSidebar 
         isOpen={isSidebarOpen}
         setIsOpen={setIsSidebarOpen}
