@@ -34,7 +34,8 @@ It’s designed to make learning **smarter, personalized, and interactive** by c
 ## SignUp Page
 <img width="1920" height="980" alt="image" src="https://github.com/user-attachments/assets/d18705b2-6ff7-461b-8fc0-18d2c530c72b" />
 ## Signin Page
-<img width="1920" height="995" alt="image" src="https://github.com/user-attachments/assets/9a9927fb-cfb8-4aa5-bee7-228f4428347f" />
+<img width="1909" height="981" alt="image" src="https://github.com/user-attachments/assets/cef9c2c5-3f57-4058-99ec-f3a3c87d9390" />
+
 
 
 
