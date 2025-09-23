@@ -1,6 +1,6 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { fileToBase64 } from "../utils/fileUtils";
-import type { QuizQuestion, QuizConfig, SkillPathResponse, Concept, CodingProblem, CodingProblemDifficulty, Language, SubmissionResult } from "../types";
+import type { QuizQuestion, QuizConfig, SkillPathResponse, Concept, CodingProblem, CodingProblemDifficulty, Language, SubmissionResult, LearnGoal, InterviewQuestion } from "../types";
 
 if (!process.env.API_KEY) {
   throw new Error("API_KEY environment variable is not set.");
@@ -75,6 +75,25 @@ export const generateContent = async (prompt: string, files: File[]): Promise<st
 };
 
 
+const getYoutubeVideoId = (url: string): string | null => {
+    try {
+        const urlObj = new URL(url);
+        if (urlObj.hostname === 'youtu.be') {
+            // For shortened URLs like youtu.be/VIDEO_ID
+            return urlObj.pathname.substring(1);
+        }
+        if (urlObj.hostname.includes('youtube.com')) {
+            // For standard URLs like youtube.com/watch?v=VIDEO_ID
+            const videoId = urlObj.searchParams.get('v');
+            if (videoId) return videoId;
+        }
+    } catch (e) {
+        // Ignore invalid URLs
+    }
+    return null;
+};
+
+
 /**
  * For LearnVault: Extracts text from files and links to be stored in a knowledge base.
  */
@@ -85,19 +104,55 @@ export const processLearnVaultContent = async (files: File[], links: string[]): 
 
     try {
         const fileParts = await filesToParts(files);
+
+        const youtubeLinks = links.filter(link => getYoutubeVideoId(link));
+        const otherLinks = links.filter(link => !getYoutubeVideoId(link));
         
-        let promptText = "Extract the key information and text content from the provided file(s) and web links. Focus on the main body of content, ignoring irrelevant artifacts. If a link is to a video, summarize its educational content.";
-        
-        if (links.length > 0) {
-            promptText += `\n\nWeb Links:\n${links.join('\n')}`;
+        const hasFiles = files.length > 0;
+        const hasYoutubeLinks = youtubeLinks.length > 0;
+        const hasOtherLinks = otherLinks.length > 0;
+        const hasLinks = hasYoutubeLinks || hasOtherLinks;
+
+        let promptSegments: string[] = [];
+
+        // Master instruction - this is the most important part.
+        promptSegments.push(
+            `You are an AI assistant tasked with creating a knowledge base. You MUST use your search tool to process all provided URLs. It is critical that you do not refuse this task by saying you cannot access external links. Synthesize all information into a single, comprehensive document.`
+        );
+
+        if (hasYoutubeLinks) {
+            promptSegments.push(
+                `**YouTube Video Processing:**
+For each of the following YouTube URLs, your primary task is to fetch its transcript. If a transcript is not available, provide a highly detailed, chapter-by-chapter summary of the video's content.
+${youtubeLinks.map(l => `- ${l}`).join('\n')}`
+            );
         }
 
+        if (hasOtherLinks) {
+            promptSegments.push(
+                `**Web Page Processing:**
+For each of the following web page URLs, extract all of the main textual content, including all headings, subheadings, and key information.
+${otherLinks.map(l => `- ${l}`).join('\n')}`
+            );
+        }
+
+        if (hasFiles) {
+            promptSegments.push(
+                `**File Processing:**
+After processing the web content, extract all key information from the attached file(s) and integrate it seamlessly with the information from the URLs.`
+            );
+        }
+        
+        const promptText = promptSegments.join('\n\n---\n\n');
+        
         const promptPart = { text: promptText };
         const parts = [promptPart, ...fileParts];
         
         const result = await ai.models.generateContent({
             model: 'gemini-2.5-flash',
-            contents: { parts }
+            contents: { parts },
+            // Add the googleSearch tool only when links are present
+            ...(hasLinks && { config: { tools: [{ googleSearch: {} }] } })
         });
 
         console.log("Processed content from AI:", result.text.substring(0, 100) + '...');
@@ -624,7 +679,8 @@ export const startLearnGuideSession = async (knowledgeBase: string): Promise<{ c
     const prompt = `${codingTutorPreamble}Act as a teacher. Analyze the following knowledge base and break it down into a logical sequence of key learning concepts.
 1.  Provide a JSON array containing only the titles of all the concepts in the order they should be learned.
 2.  Provide a breakdown for the VERY FIRST concept in the sequence. This breakdown must include a short 'definition', a concise 'explanation' broken down into 3-5 clear bullet points, and 2-3 practical 'examples' or mini-scenarios.
-3.  If the topic is programming-related (e.g., JavaScript, Python), ensure the 'explanation' and 'examples' include relevant code snippets. Each code snippet MUST be a separate item in its array, enclosed in markdown-style triple backticks. Do not include explanatory text within the same item as a code block.
+3.  **CRITICAL RULE:** For the 'explanation' and 'examples' fields, if the topic is about computer programming, software, or technology, provide relevant code snippets. If the topic is theoretical (e.g., history, biology, arts), provide real-world analogies, case studies, or illustrative scenarios instead of code.
+4.  When providing code snippets, they MUST be a separate item in their respective array and enclosed in markdown-style triple backticks. Do not include explanatory text within the same item as a code block.
 
 Knowledge Base:
 ---
@@ -663,7 +719,8 @@ export const getConceptExplanation = async (knowledgeBase: string, conceptTitle:
     const truncatedKb = truncateText(knowledgeBase);
     const prompt = `${codingTutorPreamble}I am teaching a student based on the following text. They have already understood these concepts: [${learnedConcepts.join(', ')}].
 Now, please provide a breakdown of the concept of "${conceptTitle}". This breakdown must include a short 'definition', a concise 'explanation' broken down into 3-5 clear bullet points, and 2-3 practical 'examples' or mini-scenarios.
-If the topic is programming-related (e.g., JavaScript, Python), ensure the 'explanation' and 'examples' include relevant code snippets. Each code snippet MUST be a separate item in its array, enclosed in markdown-style triple backticks. Do not include explanatory text within the same item as a code block.
+**CRITICAL RULE:** For the 'explanation' and 'examples' fields, if the topic is about computer programming, software, or technology, provide relevant code snippets. If the topic is theoretical (e.g., history, biology, arts), provide real-world analogies, case studies, or illustrative scenarios instead of code.
+When providing code snippets, they MUST be a separate item in their respective array and enclosed in markdown-style triple backticks. Do not include explanatory text within the same item as a code block.
 
 Full Text:
 ---
@@ -694,7 +751,7 @@ ${truncatedKb}
 export const reexplainConcept = async (conceptTitle: string, originalExplanation: string[]): Promise<Concept> => {
     const prompt = `${codingTutorPreamble}A student is confused about the concept of "${conceptTitle}". Their current explanation is: "${originalExplanation.join('. ')}".
 Please re-explain this concept in simpler terms. Use a clear analogy or a different, more straightforward example to help them understand. Your response must include a new simplified 'definition', a new 'explanation' broken down into simple bullet points, and new 'examples'. The goal is clarity and comprehension.
-If the topic is programming-related, ensure your new examples are clear, concise code snippets. Each code snippet MUST be a separate item in its array, enclosed in markdown-style triple backticks.
+**CRITICAL RULE:** For the new 'examples', if the topic is programming-related, provide clear, concise code snippets. If not, use simple analogies. Code snippets MUST be a separate item in their array, enclosed in markdown-style triple backticks.
 `;
     try {
         const result = await ai.models.generateContent({
@@ -871,5 +928,156 @@ For each test case, you MUST perform the following steps:
             time: '0',
             memory: 0
         } as SubmissionResult));
+    }
+};
+
+// --- NEW LearnGuide Content Generation ---
+
+export type LearnGuideContent = 
+    | { type: 'structured'; data: { concepts: string[], firstConcept: Concept }; title: string }
+    | { type: 'markdown'; data: string; title: string }
+    | { type: 'qa'; data: InterviewQuestion[]; title: string };
+
+export const generateLearnGuideContent = async (knowledgeBase: string, goal: LearnGoal): Promise<LearnGuideContent> => {
+    const truncatedKb = truncateText(knowledgeBase);
+
+    try {
+        switch (goal) {
+            case 'Descriptive': {
+                const prompt = `${codingTutorPreamble}You are an expert tutor creating a study guide for a descriptive exam based on the provided text.
+Your task is to extract the exact concepts, including all headings and subheadings from the material.
+For each heading and subheading, provide a detailed explanation.
+- If the content is theoretical, provide clear, simple explanations.
+- If the content is programming-related, provide a definition, explanation, and example code for each concept.
+**CRITICAL RULE**: Any code you provide MUST be inside a fenced markdown code block with the language specified. For example: \`\`\`js\\nconsole.log('Hello');\\n\`\`\`. Do not include explanations inside the code block itself.
+Do NOT summarize. Adhere strictly to the structure of the provided text. Format your output as a single markdown document.
+
+Text:
+---
+${truncatedKb}
+---`;
+                const result = await ai.models.generateContent({ model: 'gemini-2.5-flash', contents: prompt });
+                return { type: 'markdown', data: result.text, title: 'Descriptive Exam Guide' };
+            }
+
+            case 'Revision': {
+                const prompt = `${codingTutorPreamble}Generate short, crisp revision notes from the following text.
+Focus on key definitions, important formulas, or short, illustrative examples.
+Use markdown bullet points for easy scanning.
+**CRITICAL RULE**: Any code you provide MUST be inside a fenced markdown code block with the language specified. For example: \`\`\`js\\nconsole.log('Hello');\\n\`\`\`.
+
+Text:
+---
+${truncatedKb}
+---`;
+                const result = await ai.models.generateContent({ model: 'gemini-2.5-flash', contents: prompt });
+                return { type: 'markdown', data: result.text, title: 'Quick Revision Notes' };
+            }
+
+            case 'Interview': {
+                const prompt = `You are an interview preparation coach. Generate a list of 10 Q&A pairs from the provided text, ranging from basic to advanced concepts.
+- Each answer must be short and efficient, around 2-3 lines.
+- For programmatic questions, provide a concise code example in the answer, formatted within markdown code blocks.
+- For conceptual questions, provide a short theory answer.
+
+Text:
+---
+${truncatedKb}
+---`;
+                const interviewQASchema = {
+                    type: Type.OBJECT,
+                    properties: {
+                        questions: {
+                            type: Type.ARRAY,
+                            items: {
+                                type: Type.OBJECT,
+                                properties: {
+                                    question: { type: Type.STRING },
+                                    answer: { type: Type.STRING }
+                                },
+                                required: ['question', 'answer']
+                            }
+                        }
+                    },
+                    required: ['questions']
+                };
+                const result = await ai.models.generateContent({
+                    model: 'gemini-2.5-flash',
+                    contents: prompt,
+                    config: {
+                        responseMimeType: "application/json",
+                        responseSchema: interviewQASchema,
+                    },
+                });
+                const parsed = JSON.parse(result.text.trim());
+                return { type: 'qa', data: parsed.questions, title: 'Interview Prep Q&A' };
+            }
+
+            case 'Learn':
+            default: {
+                const structuredData = await startLearnGuideSession(knowledgeBase);
+                return { type: 'structured', data: structuredData, title: structuredData.firstConcept.title || 'Learning Path' };
+            }
+        }
+    } catch (error) {
+        console.error(`Error generating content for goal "${goal}":`, error);
+        if (error instanceof Error) {
+            throw new Error(`AI generation for your goal failed: ${error.message}`);
+        }
+        throw new Error("An unknown error occurred during AI content generation.");
+    }
+};
+
+/**
+ * For LearnGuide: Generates more interview questions.
+ */
+export const generateMoreInterviewQuestions = async (knowledgeBase: string, existingQuestions: InterviewQuestion[]): Promise<InterviewQuestion[]> => {
+    const truncatedKb = truncateText(knowledgeBase);
+    const existingQuestionTexts = existingQuestions.map(q => `- ${q.question}`).join('\n');
+
+    const prompt = `You are an interview preparation coach. Generate a list of 10 MORE unique Q&A pairs from the provided text, ranging from basic to advanced concepts.
+- DO NOT REPEAT any of the following questions that have already been asked:
+${existingQuestionTexts}
+- Each answer must be short and efficient, around 2-3 lines.
+- For programmatic questions, provide a concise code example in the answer, formatted within markdown code blocks.
+- For conceptual questions, provide a short theory answer.
+
+Text:
+---
+${truncatedKb}
+---`;
+
+    const interviewQASchema = {
+        type: Type.OBJECT,
+        properties: {
+            questions: {
+                type: Type.ARRAY,
+                items: {
+                    type: Type.OBJECT,
+                    properties: {
+                        question: { type: Type.STRING },
+                        answer: { type: Type.STRING }
+                    },
+                    required: ['question', 'answer']
+                }
+            }
+        },
+        required: ['questions']
+    };
+
+    try {
+        const result = await ai.models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: prompt,
+            config: {
+                responseMimeType: "application/json",
+                responseSchema: interviewQASchema,
+            },
+        });
+        const parsed = JSON.parse(result.text.trim());
+        return parsed.questions as InterviewQuestion[];
+    } catch (error) {
+        console.error("Error generating more interview questions:", error);
+        throw new Error("AI failed to generate more questions.");
     }
 };

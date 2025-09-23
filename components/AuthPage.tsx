@@ -1,8 +1,7 @@
 import React, { useState } from 'react';
-// Fix: Remove v9 imports.
 // Fix: Import v8-compatible instances and the firebase namespace.
 import { auth, db, firebase } from '../services/firebaseConfig';
-import { BookOpenIcon, EyeIcon, EyeOffIcon } from './Icons';
+import { BookOpenIcon, EyeIcon, EyeOffIcon, GoogleIcon } from './Icons';
 
 export const AuthPage: React.FC = () => {
     const [isSignUp, setIsSignUp] = useState(false);
@@ -14,6 +13,47 @@ export const AuthPage: React.FC = () => {
     const [isLoading, setIsLoading] = useState(false);
     const [successMessage, setSuccessMessage] = useState<string | null>(null);
     const [isPasswordVisible, setIsPasswordVisible] = useState(false);
+
+    const handleGoogleSignIn = async () => {
+        setError(null);
+        setSuccessMessage(null);
+        setIsLoading(true);
+
+        const provider = new firebase.auth.GoogleAuthProvider();
+        try {
+            const result = await auth.signInWithPopup(provider);
+            const user = result.user;
+
+            if (user) {
+                const userDocRef = db.collection('users').doc(user.uid);
+                const userDoc = await userDocRef.get();
+
+                if (!userDoc.exists) {
+                    const nameParts = user.displayName?.split(' ') || ['User', ''];
+                    const newFirstName = nameParts[0];
+                    const newLastName = nameParts.length > 1 ? nameParts[nameParts.length - 1] : '';
+
+                    await userDocRef.set({
+                        profile: {
+                            name: user.displayName || 'New User',
+                            email: user.email,
+                            profilePic: `${newFirstName[0] || ''}${newLastName[0] || ''}`.toUpperCase(),
+                        },
+                        learnVaultContent: '',
+                        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+                    });
+                    setSuccessMessage('✅ Account created with Google! You are now logged in.');
+                }
+                // Existing user is handled by onAuthStateChanged
+            }
+        } catch (err: any) {
+            if (err.code !== 'auth/popup-closed-by-user') {
+                setError(err.message.replace('Firebase: ', ''));
+            }
+        } finally {
+            setIsLoading(false);
+        }
+    };
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -82,6 +122,24 @@ export const AuthPage: React.FC = () => {
                         Welcome to LearnMate AI
                     </h1>
                     <p className="text-gray-600 dark:text-gray-400 mt-1">{isSignUp ? 'Create an account to get started' : 'Sign in to continue'}</p>
+                </div>
+
+                <div className="space-y-4">
+                    <button
+                        type="button"
+                        onClick={handleGoogleSignIn}
+                        disabled={isLoading}
+                        className="w-full flex items-center justify-center gap-3 px-4 py-3 font-semibold text-gray-700 dark:text-gray-200 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg shadow-sm hover:bg-gray-50 dark:hover:bg-gray-600 disabled:opacity-50 transition-colors"
+                    >
+                        <GoogleIcon className="h-5 w-5" />
+                        {isSignUp ? 'Sign up with Google' : 'Sign in with Google'}
+                    </button>
+                </div>
+
+                <div className="flex items-center">
+                    <hr className="flex-grow border-gray-300 dark:border-gray-600" />
+                    <span className="mx-4 text-sm font-medium text-gray-500 dark:text-gray-400">OR</span>
+                    <hr className="flex-grow border-gray-300 dark:border-gray-600" />
                 </div>
 
                 <form onSubmit={handleSubmit} className="space-y-4">

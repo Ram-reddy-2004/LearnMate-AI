@@ -117,7 +117,6 @@ export interface SubmissionResult {
     compile_output?: string;
     time?: string; // e.g., "0.05s"
     memory?: number; // in KB
-    failedInput?: string;
 }
 
 export interface TestCaseResult {
@@ -151,9 +150,16 @@ export interface SkillPathResponse {
 }
 
 // Types for LearnGuide feature
+export type LearnGoal = 'Descriptive' | 'Revision' | 'Learn' | 'Interview';
+
 export interface Concept {
     title: string;
     definition: string;
     explanation:string[];
     examples: string[];
+}
+
+export interface InterviewQuestion {
+  question: string;
+  answer: string;
 }
