@@ -190,5 +190,7 @@ I suspect it’s because the **code is not compiling/executing against test case
    - Firebase Hosting (Free tier)
    - Cloud Run (Free tier)
 
+7. Live Demo Link:
+   - https://learnmate-ai-613530799292.us-west1.run.app/
 ## 🤝 Contributing
    - Pull requests are welcome! If you’d like to suggest features, raise an issue first.
